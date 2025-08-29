@@ -1,0 +1,4 @@
+bridge.worker.js
+main.wasm
+sqlite3.wasm
+wasm_exec.js

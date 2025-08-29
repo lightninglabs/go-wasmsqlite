@@ -84,10 +84,14 @@
     </style>
 </head>
 <body>
-    <h1>🚀 wasmsqlite Demo</h1>
+    <h1>🚀 sqlc-wasm Demo</h1>
     <p>
         This demo showcases a SQLite database running entirely in your browser using WebAssembly,
-        with data persisted in OPFS (Origin Private File System).
+        with data persisted in OPFS (Origin Private File System) when available.
+    </p>
+    <p>
+        <strong>Features demonstrated:</strong> CRUD operations, transactions, database dump/load, 
+        and SQLC-generated code running in the browser.
     </p>
 
     <div id="status" class="status loading">
@@ -100,6 +104,8 @@
         <p>Run a complete demonstration that tests all CRUD operations (Create, Read, Update, Delete):</p>
         <button id="runDemo" onclick="runCompleteDemo()">Run Complete CRUD Demo</button>
         <button onclick="clearDatabase()">🧹 Clear Database</button>
+        <button onclick="exportDatabase()">💾 Dump Database</button>
+        <button onclick="importDatabase()">📂 Load Database</button>
     </div>
 
     <div class="container">
@@ -304,6 +310,52 @@ Loading WebAssembly module...</div>
                 console.log("\n🧹 Clearing database...");
                 window.clearDatabase();
             }
+        }
+        
+        function exportDatabase() {
+            if (!checkReady()) return;
+            
+            console.log("\n💾 Dumping database...");
+            
+            // Set up a callback for when the dump is ready
+            window.onDatabaseDumped = function(dump) {
+                const blob = new Blob([dump], { type: 'text/sql' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `database-dump-${new Date().toISOString()}.sql`;
+                a.click();
+                URL.revokeObjectURL(url);
+                console.log("📥 Database dump downloaded!");
+                
+                // Clean up the callback
+                delete window.onDatabaseDumped;
+            };
+            
+            // Call the Go function
+            dumpDatabase();
+        }
+        
+        function importDatabase() {
+            if (!checkReady()) return;
+            
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.sql';
+            input.onchange = (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        const dump = e.target.result;
+                        console.log(`\n📂 Loading database from ${file.name}...`);
+                        // Call the Go function
+                        loadDatabase(dump);
+                    };
+                    reader.readAsText(file);
+                }
+            };
+            input.click();
         }
 
         // Disable buttons initially

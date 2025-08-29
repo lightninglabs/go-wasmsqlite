@@ -47,7 +47,7 @@ func DefaultOptions() *Options {
 		VFS:         "opfs-sahpool",
 		BusyTimeout: 5000,
 		ParseTime:   false,
-		WorkerURL:   "/bridge.worker.js", // Use direct file instead of blob
+		WorkerURL:   "", // Empty means use embedded Worker
 	}
 }
 
@@ -240,8 +240,8 @@ func initializeSQLiteWASM(queue *internal.Queue) error {
 	return nil
 }
 
-// openDatabase opens the database in the Worker
-func openDatabase(queue *internal.Queue, opts *Options) error {
+// openDatabase opens the database in the Worker and returns the VFS type
+func openDatabase(queue *internal.Queue, opts *Options) (string, error) {
 	request := createJSRequest(0, "open", map[string]interface{}{
 		"file": opts.File,
 		"vfs":  opts.VFS,
@@ -252,19 +252,27 @@ func openDatabase(queue *internal.Queue, opts *Options) error {
 	
 	response, err := queue.SendRequest(ctx, request)
 	if err != nil {
-		return err
+		return "", err
 	}
 	
 	if response.Error != nil {
-		return response.Error
+		return "", response.Error
 	}
 	
+	// Extract VFS type from response
+	vfsType := "unknown"
+	if !response.Data.IsNull() && !response.Data.IsUndefined() {
+		vfs := response.Data.Get("vfsType")
+		if vfs.Truthy() {
+			vfsType = vfs.String()
+		}
+	}
 	
 	// Execute initial pragma statements if any
 	if len(opts.Pragma) > 0 {
 		for _, pragma := range opts.Pragma {
 			if err := executePragma(queue, pragma); err != nil {
-				return fmt.Errorf("failed to execute pragma %s: %w", pragma, err)
+				return vfsType, fmt.Errorf("failed to execute pragma %s: %w", pragma, err)
 			}
 		}
 	}
@@ -273,7 +281,7 @@ func openDatabase(queue *internal.Queue, opts *Options) error {
 	if opts.JournalMode != "" {
 		pragma := fmt.Sprintf("PRAGMA journal_mode=%s", opts.JournalMode)
 		if err := executePragma(queue, pragma); err != nil {
-			return fmt.Errorf("failed to set journal mode: %w", err)
+			return vfsType, fmt.Errorf("failed to set journal mode: %w", err)
 		}
 	}
 	
@@ -281,11 +289,11 @@ func openDatabase(queue *internal.Queue, opts *Options) error {
 	if opts.BusyTimeout > 0 {
 		pragma := fmt.Sprintf("PRAGMA busy_timeout=%d", opts.BusyTimeout)
 		if err := executePragma(queue, pragma); err != nil {
-			return fmt.Errorf("failed to set busy timeout: %w", err)
+			return vfsType, fmt.Errorf("failed to set busy timeout: %w", err)
 		}
 	}
 	
-	return nil
+	return vfsType, nil
 }
 
 // executePragma executes a pragma statement

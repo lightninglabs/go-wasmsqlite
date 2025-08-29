@@ -8,7 +8,9 @@ type RequestMessage =
   | { id: number; type: 'begin' }
   | { id: number; type: 'commit' }
   | { id: number; type: 'rollback' }
-  | { id: number; type: 'close' };
+  | { id: number; type: 'close' }
+  | { id: number; type: 'dump' }
+  | { id: number; type: 'load'; sql: string };
 
 type ResponseMessage = {
   id: number;
@@ -18,10 +20,13 @@ type ResponseMessage = {
   rows?: any[][];
   rowsAffected?: number;
   lastInsertId?: number;
+  vfsType?: string;
+  dump?: string;
 };
 
 let sqlite3: any;
 let db: any;
+let vfsType: string = 'unknown';
 
 function postSuccess(id: number, payload: Partial<ResponseMessage> = {}) {
   const message: ResponseMessage = { id, ok: true, ...payload };
@@ -73,13 +78,24 @@ self.onmessage = async (event: MessageEvent<RequestMessage>) => {
           // Try to find an available VFS
           if (sqlite3.capi.sqlite3_vfs_find('opfs')) {
             vfs = 'opfs';
+            vfsType = 'opfs';
             console.log('Using OPFS VFS (without sahpool)');
           } else {
             vfs = undefined as any; // Use default VFS (likely in-memory)
+            vfsType = 'memory';
             console.warn('OPFS not available, using default VFS (data will not persist)');
             if (file !== ':memory:') {
               file = ':memory:'; // Force in-memory if OPFS not available
             }
+          }
+        } else {
+          // VFS was found
+          if (vfs === 'opfs-sahpool' || vfs === 'opfs') {
+            vfsType = 'opfs';
+          } else if (!vfs || file === ':memory:') {
+            vfsType = 'memory';
+          } else {
+            vfsType = vfs; // Use the actual VFS name
           }
         }
         
@@ -89,9 +105,10 @@ self.onmessage = async (event: MessageEvent<RequestMessage>) => {
           vfs
         });
         
-        console.log(`Database opened with file: ${file}, vfs: ${vfs || 'default'}`);
+        console.log(`Database opened with file: ${file}, vfs: ${vfs || 'default'}, type: ${vfsType}`);
         
-        postSuccess(id);
+        // Send VFS info back to Go
+        postSuccess(id, { vfsType });
         break;
 
       case 'exec':
@@ -269,6 +286,64 @@ self.onmessage = async (event: MessageEvent<RequestMessage>) => {
           db = null;
         }
         postSuccess(id);
+        break;
+
+      case 'dump':
+        if (!db) {
+          throw new Error('Database not opened');
+        }
+        
+        try {
+          // Get all the data
+          const tables = db.selectArrays("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'");
+          let dumpSql = '';
+          
+          // Add schema
+          const schemas = db.selectArrays("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY tbl_name, type DESC, name");
+          for (const [schemaSql] of schemas) {
+            dumpSql += schemaSql + ';\n';
+          }
+          
+          // Add data for each table
+          for (const [tableName] of tables) {
+            const rows = db.selectArrays(`SELECT * FROM ${tableName}`);
+            if (rows.length > 0) {
+              // Get column names
+              const stmt = db.prepare(`SELECT * FROM ${tableName} LIMIT 0`);
+              const columnNames = stmt.getColumnNames();
+              stmt.finalize();
+              
+              for (const row of rows) {
+                const values = row.map((v: any) => {
+                  if (v === null) return 'NULL';
+                  if (typeof v === 'string') return `'${v.replace(/'/g, "''")}'`;
+                  return String(v);
+                }).join(', ');
+                dumpSql += `INSERT INTO ${tableName} (${columnNames.join(', ')}) VALUES (${values});\n`;
+              }
+            }
+          }
+          
+          postSuccess(id, { dump: dumpSql });
+        } catch (e) {
+          throw new Error(`Failed to dump database: ${e}`);
+        }
+        break;
+
+      case 'load':
+        if (!db) {
+          throw new Error('Database not opened');
+        }
+        
+        const { sql: loadSql } = event.data;
+        
+        try {
+          // Execute the SQL dump to restore the database
+          db.exec(loadSql);
+          postSuccess(id);
+        } catch (e) {
+          throw new Error(`Failed to load database: ${e}`);
+        }
         break;
 
       default:

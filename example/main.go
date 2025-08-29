@@ -10,7 +10,7 @@ import (
 	"syscall/js"
 
 	database "github.com/sputn1ck/sqlc-wasm/example/generated"
-	_ "github.com/sputn1ck/sqlc-wasm"
+	wasmsqlite "github.com/sputn1ck/sqlc-wasm"
 )
 
 var (
@@ -41,6 +41,8 @@ func main() {
 	js.Global().Set("updatePost", js.FuncOf(updatePostJS))
 	js.Global().Set("deletePost", js.FuncOf(deletePostJS))
 	js.Global().Set("clearDatabase", js.FuncOf(clearDatabaseJS))
+	js.Global().Set("dumpDatabase", js.FuncOf(dumpDatabaseJS))
+	js.Global().Set("loadDatabase", js.FuncOf(loadDatabaseJS))
 
 	fmt.Println("✅ Demo functions are ready!")
 	fmt.Println("📖 Available functions:")
@@ -53,6 +55,8 @@ func main() {
 	fmt.Println("  - updatePost(postID, title, content, published): Update a post")
 	fmt.Println("  - deletePost(postID): Delete a post")
 	fmt.Println("  - clearDatabase(): Clear all data from the database")
+	fmt.Println("  - dumpDatabase(): Export database as SQL dump (saved to window.lastDatabaseDump)")
+	fmt.Println("  - loadDatabase(dump): Import SQL dump to restore database")
 
 	// Keep the program running
 	select {}
@@ -425,5 +429,51 @@ func clearDatabaseJS(this js.Value, p []js.Value) interface{} {
 		fmt.Println("✅ Database cleared successfully!")
 	}()
 
+	return nil
+}
+
+func dumpDatabaseJS(this js.Value, p []js.Value) interface{} {
+	go func() {
+		dump, err := wasmsqlite.DumpDatabase(db)
+		if err != nil {
+			log.Printf("❌ Failed to dump database: %v", err)
+			return
+		}
+		
+		fmt.Println("✅ Database dumped successfully!")
+		fmt.Printf("📄 Dump size: %d bytes\n", len(dump))
+		
+		// Call the JavaScript callback if it exists
+		callback := js.Global().Get("onDatabaseDumped")
+		if callback.Truthy() && callback.Type() == js.TypeFunction {
+			callback.Invoke(dump)
+		} else {
+			// Fallback to setting global variable
+			js.Global().Set("lastDatabaseDump", dump)
+			fmt.Println("💾 Dump saved to window.lastDatabaseDump")
+		}
+	}()
+	
+	return nil
+}
+
+func loadDatabaseJS(this js.Value, p []js.Value) interface{} {
+	if len(p) < 1 {
+		log.Println("❌ loadDatabase requires SQL dump parameter")
+		return nil
+	}
+	
+	dump := p[0].String()
+	
+	go func() {
+		err := wasmsqlite.LoadDatabase(db, dump)
+		if err != nil {
+			log.Printf("❌ Failed to load database: %v", err)
+			return
+		}
+		
+		fmt.Println("✅ Database loaded successfully!")
+	}()
+	
 	return nil
 }

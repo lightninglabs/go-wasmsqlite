@@ -1,0 +1,57 @@
+name: Check Worker Consistency
+
+on:
+  pull_request:
+    paths:
+      - 'worker/**'
+      - 'assets/bridge.worker.js'
+  push:
+    branches: [ main ]
+    paths:
+      - 'worker/**'
+      - 'assets/bridge.worker.js'
+
+jobs:
+  check-worker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          
+      - name: Install dependencies
+        run: |
+          cd worker
+          npm ci
+          
+      - name: Build Worker
+        run: |
+          cd worker
+          npm run build
+          
+      - name: Check if Worker is up to date
+        run: |
+          # Check if the built Worker differs from the committed one
+          if ! diff -q worker/../assets/bridge.worker.js assets/bridge.worker.js; then
+            echo "❌ Error: Worker source changed but embedded file not updated!"
+            echo "Please run 'cd worker && npm run build' and commit the changes to assets/bridge.worker.js"
+            exit 1
+          else
+            echo "✅ Worker is up to date"
+          fi
+          
+      - name: Check git status
+        run: |
+          # Double-check using git status
+          if [[ -n $(git status --porcelain assets/bridge.worker.js) ]]; then
+            echo "❌ Error: assets/bridge.worker.js has uncommitted changes after build"
+            echo "Please rebuild the Worker and commit the changes"
+            git diff assets/bridge.worker.js
+            exit 1
+          else
+            echo "✅ No uncommitted changes in Worker"
+          fi

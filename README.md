@@ -9,6 +9,9 @@ A WebAssembly SQLite driver for Go that enables sqlc-generated code to run in th
 - 🔄 Full transaction support (BEGIN/COMMIT/ROLLBACK)
 - ⚡ Works with any sqlc-generated SQLite code
 - 📦 No JavaScript toolchain required for users
+- 🔍 VFS detection to know if using OPFS or in-memory storage
+- 💼 Database dump/load functionality for backups and migrations
+- 🏗️ Embedded Worker - no external JavaScript files needed
 
 ## Requirements
 
@@ -46,14 +49,24 @@ func main() {
 
 ## Important Setup Steps
 
-### 1. Copy Required Files
+### 1. Obtain SQLite WASM
 
-When building your WASM application, you need to serve these files:
+Download the official SQLite WASM file from the SQLite project:
 
 ```bash
-# Copy SQLite WASM file to your web directory
-cp $GOPATH/pkg/mod/github.com/sputn1ck/sqlc-wasm*/assets/sqlite3.wasm ./web/
+# Download SQLite WASM (latest version)
+curl -L https://sqlite.org/2024/sqlite-wasm-3460000.zip -o sqlite-wasm.zip
+unzip sqlite-wasm.zip
+cp sqlite-wasm-*/jswasm/sqlite3.wasm ./web/
 
+# Or use npm/CDN
+npm install @sqlite.org/sqlite-wasm
+cp node_modules/@sqlite.org/sqlite-wasm/sqlite3.wasm ./web/
+```
+
+### 2. Build Your Application
+
+```bash
 # Build your Go WASM binary
 GOOS=js GOARCH=wasm go build -o web/main.wasm ./cmd/app
 
@@ -61,14 +74,14 @@ GOOS=js GOARCH=wasm go build -o web/main.wasm ./cmd/app
 cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" ./web/
 ```
 
-### 2. Serve Files Correctly
+### 3. Serve Files Correctly
 
 Your web server must serve these files:
 - `main.wasm` - Your Go application
 - `wasm_exec.js` - Go's WASM support
 - `sqlite3.wasm` - SQLite WebAssembly (MUST be at root path `/sqlite3.wasm`)
 
-### 3. Use HTTPS or localhost
+### 4. Use HTTPS or localhost
 
 OPFS requires a secure context:
 - ✅ `https://` - Production
@@ -97,6 +110,52 @@ make serve  # Serves on http://localhost:8081
 Example with options:
 ```go
 db, err := sql.Open("wasmsqlite", "file=/data.db?vfs=opfs-sahpool&busy_timeout=10000&journal_mode=wal")
+```
+
+## Advanced Features
+
+### Database Dump/Load
+
+Export and import entire databases as SQL:
+
+```go
+import wasmsqlite "github.com/sputn1ck/sqlc-wasm"
+
+// Export database
+dump, err := wasmsqlite.DumpDatabase(db)
+if err != nil {
+    // handle error
+}
+// Save dump to localStorage, send to server, etc.
+
+// Import database
+err = wasmsqlite.LoadDatabase(db, dump)
+if err != nil {
+    // handle error
+}
+```
+
+### VFS Detection
+
+Check if database is using persistent storage:
+
+```go
+conn, _ := db.Conn(context.Background())
+defer conn.Close()
+
+var vfsType wasmsqlite.VFSType
+conn.Raw(func(driverConn interface{}) error {
+    c := driverConn.(*wasmsqlite.Conn)
+    vfsType = c.GetVFSType()
+    return nil
+})
+
+switch vfsType {
+case wasmsqlite.VFSTypeOPFS:
+    // Using persistent OPFS storage
+case wasmsqlite.VFSTypeMemory:
+    // Using in-memory storage
+}
 ```
 
 ## Browser Compatibility

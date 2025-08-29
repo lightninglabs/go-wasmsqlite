@@ -47,15 +47,17 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 		return nil, fmt.Errorf("failed to create worker: %w", err)
 	}
 	
-	if err := openDatabase(queue, opts); err != nil {
+	vfsType, err := openDatabase(queue, opts)
+	if err != nil {
 		queue.Close()
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 	
 	conn := &Conn{
-		worker: worker,
-		queue:  queue,
-		opts:   opts,
+		worker:  worker,
+		queue:   queue,
+		opts:    opts,
+		vfsType: vfsType,
 	}
 	
 	return conn, nil
@@ -68,10 +70,11 @@ func (c *Connector) Driver() driver.Driver {
 
 // Conn implements the database/sql/driver.Conn interface
 type Conn struct {
-	worker js.Value
-	queue  *internal.Queue
-	opts   *Options
-	inTx   bool
+	worker  js.Value
+	queue   *internal.Queue
+	opts    *Options
+	inTx    bool
+	vfsType string
 }
 
 // Prepare implements driver.Conn
@@ -297,4 +300,62 @@ func (r *Result) RowsAffected() (int64, error) {
 		return 0, fmt.Errorf("no rows affected count available")
 	}
 	return *r.rowsAffected, nil
+}
+
+// GetVFSType returns the VFS type being used by the connection
+func (c *Conn) GetVFSType() VFSType {
+	switch c.vfsType {
+	case "opfs":
+		return VFSTypeOPFS
+	case "memory":
+		return VFSTypeMemory
+	default:
+		return VFSTypeUnknown
+	}
+}
+
+// Dump exports the database as SQL statements
+func (c *Conn) Dump(ctx context.Context) (string, error) {
+	if c.queue == nil {
+		return "", driver.ErrBadConn
+	}
+	
+	request := createJSRequest(0, "dump", nil)
+	
+	response, err := c.queue.SendRequest(ctx, request)
+	if err != nil {
+		return "", err
+	}
+	
+	if response.Error != nil {
+		return "", response.Error
+	}
+	
+	// Extract dump from response
+	if !response.Data.IsNull() && !response.Data.IsUndefined() {
+		dump := response.Data.Get("dump")
+		if dump.Truthy() {
+			return dump.String(), nil
+		}
+	}
+	
+	return "", fmt.Errorf("no dump data received")
+}
+
+// Load imports SQL statements to restore the database
+func (c *Conn) Load(ctx context.Context, dump string) error {
+	if c.queue == nil {
+		return driver.ErrBadConn
+	}
+	
+	request := createJSRequest(0, "load", map[string]interface{}{
+		"sql": dump,
+	})
+	
+	response, err := c.queue.SendRequest(ctx, request)
+	if err != nil {
+		return err
+	}
+	
+	return response.Error
 }
