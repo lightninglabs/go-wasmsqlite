@@ -51,9 +51,28 @@ self.onmessage = async (event: MessageEvent<RequestMessage>) => {
         // Initialize SQLite WASM - it will fetch sqlite3.wasm from the same origin
         sqlite3 = await sqlite3InitModule({
           locateFile: (filename: string) => {
-            // Use absolute URL to ensure it works from blob: context
             if (filename === 'sqlite3.wasm') {
-              return new URL('/sqlite3.wasm', self.location.origin).href;
+              // The Worker is loaded as a blob URL, so we need to construct 
+              // the correct path based on the origin
+              const origin = self.location.origin;
+              
+              // Check if we're on GitHub Pages with a project subdirectory
+              if (origin.includes('github.io')) {
+                // Extract the path from the blob URL origin
+                // GitHub Pages format: https://username.github.io/repo-name/
+                // We need to check if there's a repo name in the path
+                // This is tricky from a blob URL, so we'll try to detect it
+                // by checking common patterns
+                
+                // For now, hardcode the known path for this project
+                if (origin.includes('sputn1ck.github.io')) {
+                  return 'https://sputn1ck.github.io/sqlc-wasm/sqlite3.wasm';
+                }
+              }
+              
+              // For local development or root deployment
+              // Use origin without pathname since blob URLs don't have meaningful pathnames
+              return origin + '/sqlite3.wasm';
             }
             return filename;
           }
@@ -298,8 +317,8 @@ self.onmessage = async (event: MessageEvent<RequestMessage>) => {
           const tables = db.selectArrays("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'");
           let dumpSql = '';
           
-          // Add schema
-          const schemas = db.selectArrays("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY tbl_name, type DESC, name");
+          // Add schema (excluding sqlite_sequence which is auto-created)
+          const schemas = db.selectArrays("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY tbl_name, type DESC, name");
           for (const [schemaSql] of schemas) {
             dumpSql += schemaSql + ';\n';
           }
@@ -338,6 +357,12 @@ self.onmessage = async (event: MessageEvent<RequestMessage>) => {
         const { sql: loadSql } = event.data;
         
         try {
+          // First, drop existing tables to avoid conflicts
+          const tables = db.selectArrays("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'");
+          for (const [tableName] of tables) {
+            db.exec(`DROP TABLE IF EXISTS ${tableName}`);
+          }
+          
           // Execute the SQL dump to restore the database
           db.exec(loadSql);
           postSuccess(id);
