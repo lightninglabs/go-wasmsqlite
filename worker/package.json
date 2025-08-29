@@ -1,0 +1,16 @@
+{
+  "name": "wasmsqlite-worker",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@sqlite.org/sqlite-wasm": "3.46.1-build2"
+  },
+  "devDependencies": {
+    "esbuild": "^0.23.0",
+    "typescript": "^5.0.0"
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "dev": "node esbuild.mjs --watch"
+  }
+}

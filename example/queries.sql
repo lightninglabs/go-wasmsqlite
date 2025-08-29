@@ -27,6 +27,10 @@ SELECT * FROM posts
 WHERE user_id = ?
 ORDER BY created_at DESC;
 
+-- name: ListPosts :many
+SELECT * FROM posts
+ORDER BY created_at DESC;
+
 -- name: UpdatePost :exec
 UPDATE posts
 SET title = ?, content = ?, published = ?
