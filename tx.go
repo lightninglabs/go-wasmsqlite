@@ -19,16 +19,16 @@ func (tx *Tx) Commit() error {
 	if tx.conn.adapter == nil {
 		return driver.ErrBadConn
 	}
-	
+
 	if !tx.conn.inTx {
 		return ErrTxDone
 	}
-	
+
 	err := tx.conn.adapter.Commit()
 	if err != nil {
 		return err
 	}
-	
+
 	tx.conn.inTx = false
 	return nil
 }
@@ -38,16 +38,16 @@ func (tx *Tx) Rollback() error {
 	if tx.conn.adapter == nil {
 		return driver.ErrBadConn
 	}
-	
+
 	if !tx.conn.inTx {
 		return ErrTxDone
 	}
-	
+
 	err := tx.conn.adapter.Rollback()
 	if err != nil {
 		return err
 	}
-	
+
 	tx.conn.inTx = false
 	return nil
 }

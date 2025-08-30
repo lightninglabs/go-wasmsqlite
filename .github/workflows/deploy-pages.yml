@@ -26,21 +26,13 @@ jobs:
         with:
           go-version: '1.21'
           
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-          
-      - name: Build Worker
+      - name: Fetch SQLite WASM assets
         run: |
-          cd worker
-          npm ci
-          npm run build
+          chmod +x scripts/fetch-sqlite-wasm.sh
+          ./scripts/fetch-sqlite-wasm.sh
           
       - name: Build Example
-        run: |
-          cd example
-          make
+        run: make build-example
           
       - name: Setup Pages
         uses: actions/configure-pages@v4

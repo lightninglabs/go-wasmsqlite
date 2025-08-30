@@ -11,8 +11,6 @@ import (
 	"strings"
 	"syscall/js"
 	"time"
-
-	"github.com/sputn1ck/sqlc-wasm/internal"
 )
 
 // Options represents configuration options for opening a wasmsqlite database
@@ -158,21 +156,21 @@ func parseDSN(dsn string) (*Options, error) {
 }
 
 // createWorker creates a new bridge to SQLite WASM
-func createWorker(opts *Options) (js.Value, *internal.Queue, error) {
+func createWorker(opts *Options) (js.Value, error) {
 	// Check if the SQLite bridge is available
 	bridge := js.Global().Get("sqliteBridge")
 	if bridge.IsUndefined() {
-		return js.Null(), nil, fmt.Errorf("sqliteBridge not found - ensure sqlite-bridge.js is loaded")
+		return js.Null(), fmt.Errorf("sqliteBridge not found - ensure sqlite-bridge.js is loaded")
 	}
 
 	// Initialize SQLite WASM through the bridge
 	if err := initializeSQLiteBridge(bridge); err != nil {
-		return js.Null(), nil, fmt.Errorf("failed to initialize SQLite bridge: %w", err)
+		return js.Null(), fmt.Errorf("failed to initialize SQLite bridge: %w", err)
 	}
 
 	// Return the bridge itself as the "worker" and a nil queue
 	// We'll bypass the queue system entirely
-	return bridge, nil, nil
+	return bridge, nil
 }
 
 // initializeSQLiteBridge initializes the SQLite bridge

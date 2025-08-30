@@ -8,7 +8,7 @@ A WebAssembly SQLite driver for Go that enables sqlc-generated code to run in th
 - 💾 Persistent storage using OPFS (Origin Private File System)
 - 🔄 Full transaction support (BEGIN/COMMIT/ROLLBACK)
 - ⚡ Works with any sqlc-generated SQLite code
-- 📦 Direct SQLite WASM integration - uses official SQLite builds
+- 📦 **Embedded SQLite WASM assets** - everything included with `go get`
 - 🔍 VFS detection to know if using OPFS or in-memory storage
 - 💼 Database dump/load functionality for backups and migrations
 - 🏗️ Built-in Web Worker bridge for optimal performance
@@ -25,6 +25,8 @@ A WebAssembly SQLite driver for Go that enables sqlc-generated code to run in th
 ```bash
 go get github.com/sputn1ck/sqlc-wasm
 ```
+
+All SQLite WASM assets are embedded in the module - no additional downloads needed!
 
 ## Quick Start
 
@@ -85,21 +87,60 @@ sqlc-wasm/
     └── generated/       # SQLC generated code
 ```
 
-## Setup
+## Using Embedded Assets
 
-The project uses official SQLite WASM builds:
+SQLite WASM assets (v3.50.4) are embedded in the module. You have several options for using them:
 
-### 1. Download SQLite WASM Assets
+### Option 1: Extract to Filesystem
 
-```bash
-# Fetch SQLite WASM from official source
-make fetch-assets
+```go
+import "github.com/sputn1ck/sqlc-wasm"
 
-# Or run the script directly
-./scripts/fetch-sqlite-wasm.sh
+// Extract all assets to a directory
+err := wasmsqlite.ExtractAssets("./static/wasm")
+if err != nil {
+    log.Fatal(err)
+}
+
+// Now serve ./static/wasm with your web server
 ```
 
-This downloads SQLite WASM v3.50.4 and verifies its SHA3-256 checksum.
+### Option 2: Serve via HTTP Handler
+
+```go
+import "github.com/sputn1ck/sqlc-wasm"
+
+// Create an asset handler with proper CORS headers
+handler := wasmsqlite.AssetHandler()
+
+// Serve on /wasm/ path
+http.Handle("/wasm/", http.StripPrefix("/wasm", handler))
+
+// Assets will be available at:
+// /wasm/assets/sqlite3.wasm
+// /wasm/assets/sqlite3.js
+// /wasm/assets/sqlite3-worker1.js
+// /wasm/assets/sqlite3-worker1-promiser.js
+// /wasm/assets/sqlite3-opfs-async-proxy.js
+// /wasm/bridge/sqlite-bridge.js
+```
+
+### Option 3: Access Individual Assets
+
+```go
+import "github.com/sputn1ck/sqlc-wasm"
+
+// Get specific assets
+wasmBytes, _ := wasmsqlite.GetSQLiteWASM()
+jsCode, _ := wasmsqlite.GetSQLiteJS()
+bridgeCode, _ := wasmsqlite.GetBridgeJS()
+
+// List all available assets
+assets, _ := wasmsqlite.ListAssets()
+for _, asset := range assets {
+    fmt.Println(asset)
+}
+```
 
 ### 2. Build Your Application
 
@@ -193,14 +234,18 @@ case wasmsqlite.VFSTypeMemory:
 
 ## Development
 
-### Building
+### Building from Source
+
+If you want to modify the embedded assets:
 
 ```bash
-# Initial setup (fetches SQLite WASM)
-make setup
+# Fetch latest SQLite WASM
+make fetch-assets
 
 # Build everything
 make build
+
+# The assets in ./assets/ and ./bridge/ will be embedded
 ```
 
 ### Running Tests
@@ -220,7 +265,7 @@ make dev
 
 ```bash
 make help              # Show all available commands
-make setup            # Initial setup (fetch SQLite WASM)
+make setup            # Initial setup (fetch SQLite WASM for development)
 make fetch-assets     # Download SQLite WASM from official source
 make build            # Build everything
 make build-wasm       # Build Go WASM only
@@ -228,6 +273,44 @@ make serve            # Run demo server
 make test             # Run tests
 make clean            # Clean build artifacts
 ```
+
+## Enable-Threads.js and OPFS Support
+
+The `example/enable-threads.js` file is a service worker that enables SharedArrayBuffer support in browsers. This is **required for OPFS (persistent storage) to work properly**.
+
+### Why is this needed?
+
+Modern browsers require specific Cross-Origin headers for SharedArrayBuffer:
+- `Cross-Origin-Embedder-Policy: require-corp` (or `credentialless`)
+- `Cross-Origin-Opener-Policy: same-origin`
+
+These headers enable the "cross-origin isolated" state required for:
+1. **SharedArrayBuffer** - Needed for SQLite's OPFS VFS
+2. **High-resolution timers** - Better performance measurements
+3. **Memory measurement** - Accurate memory usage reporting
+
+### How it works
+
+The service worker intercepts all requests and adds the required headers to responses. This allows OPFS to work even on development servers that don't set these headers.
+
+### Usage in your application
+
+```html
+<!-- Add this to your HTML before loading WASM -->
+<script src="enable-threads.js"></script>
+```
+
+### Alternative: Server-side headers
+
+If you control your server, you can set these headers directly instead of using the service worker:
+
+```go
+// Go example
+w.Header().Set("Cross-Origin-Embedder-Policy", "require-corp")
+w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+```
+
+**Note**: Without these headers or the service worker, SQLite will fall back to in-memory storage (no persistence).
 
 ## Architecture
 

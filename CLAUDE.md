@@ -67,13 +67,19 @@ sqlc-wasm/
 
 ## Build Commands
 ```bash
-make setup          # Initial setup (fetch SQLite WASM assets)
+make setup          # Initial setup (fetch SQLite WASM assets for development)
 make fetch-assets   # Download SQLite WASM from official source
 make build          # Build everything (assets → wasm → example)
 make build-wasm     # Build just the Go WASM
 make serve          # Build and serve demo at localhost:8081
 make clean          # Clean all build artifacts
 ```
+
+## Embedded Assets
+SQLite WASM assets are embedded in the Go module using `//go:embed`. Users can:
+- Extract assets to filesystem: `wasmsqlite.ExtractAssets("./static")`
+- Serve via HTTP handler: `http.Handle("/wasm/", wasmsqlite.AssetHandler())`
+- Access individual files: `wasmsqlite.GetSQLiteWASM()`
 
 ## Common Tasks
 
@@ -86,7 +92,8 @@ make clean          # Clean all build artifacts
 1. Edit `SQLITE_VERSION` in `scripts/fetch-sqlite-wasm.sh`
 2. Update SHA3-256 checksum in the script
 3. Run `make fetch-assets`
-4. Rebuild with `make build`
+4. Commit the updated assets to the repository
+5. Tag a new version with embedded assets
 
 ### Add Driver Features
 1. Modify relevant Go files (likely `conn.go`, `stmt.go`, or `rows.go`)

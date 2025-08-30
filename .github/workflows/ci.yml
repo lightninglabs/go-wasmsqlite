@@ -18,29 +18,22 @@ jobs:
         with:
           go-version: '1.21'
           
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-          
       - name: Get dependencies
-        run: |
-          go mod download
-          cd worker && npm ci
+        run: go mod download
           
-      - name: Build Worker
+      - name: Fetch SQLite WASM assets
         run: |
-          cd worker
-          npm run build
+          chmod +x scripts/fetch-sqlite-wasm.sh
+          ./scripts/fetch-sqlite-wasm.sh
           
       - name: Build Go library
-        run: |
-          GOOS=js GOARCH=wasm go build -v ./...
+        run: GOOS=js GOARCH=wasm go build -v ./...
+          
+      - name: Run tests
+        run: go test -v ./...
           
       - name: Build Example
-        run: |
-          cd example
-          make
+        run: make build-example
           
       - name: Check formatting
         run: |
@@ -52,8 +45,3 @@ jobs:
           
       - name: Run go vet
         run: GOOS=js GOARCH=wasm go vet ./...
-        
-      - name: Check TypeScript
-        run: |
-          cd worker
-          npx tsc --noEmit

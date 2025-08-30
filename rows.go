@@ -33,32 +33,32 @@ func (r *Rows) Next(dest []driver.Value) error {
 	if r.pos >= len(r.rows) {
 		return io.EOF
 	}
-	
+
 	row := r.rows[r.pos]
-	
+
 	// Check if we have a valid row
 	if row == nil {
 		r.pos++
 		return io.EOF
 	}
-	
+
 	// Ensure dest has the right size
 	if len(dest) != len(r.columns) {
 		return fmt.Errorf("expected %d destination values, got %d", len(r.columns), len(dest))
 	}
-	
+
 	// Copy values from row to dest
 	for i := 0; i < len(dest) && i < len(row); i++ {
 		dest[i] = convertInterfaceToDriverValue(row[i])
 	}
-	
+
 	// Fill remaining dest slots with nil if row is shorter
 	for i := len(row); i < len(dest); i++ {
 		dest[i] = nil
 	}
-	
+
 	r.pos++
-	
+
 	return nil
 }
 
@@ -67,7 +67,7 @@ func (r *Rows) ColumnTypeScanType(index int) reflect.Type {
 	if index < 0 || index >= len(r.columns) {
 		return nil
 	}
-	
+
 	// Try to infer type from the first non-null value in this column
 	for _, row := range r.rows {
 		if index < len(row) && row[index] != nil {
@@ -87,7 +87,7 @@ func (r *Rows) ColumnTypeScanType(index int) reflect.Type {
 			}
 		}
 	}
-	
+
 	// Default to interface{} if we can't determine the type
 	return reflect.TypeOf((*interface{})(nil)).Elem()
 }
@@ -97,7 +97,7 @@ func (r *Rows) ColumnTypeDatabaseTypeName(index int) string {
 	if index < 0 || index >= len(r.columns) {
 		return ""
 	}
-	
+
 	// Try to infer SQLite type from the first non-null value in this column
 	for _, row := range r.rows {
 		if index < len(row) && row[index] != nil {
@@ -117,7 +117,7 @@ func (r *Rows) ColumnTypeDatabaseTypeName(index int) string {
 			}
 		}
 	}
-	
+
 	return "NULL"
 }
 
@@ -132,19 +132,19 @@ func (r *Rows) ColumnTypeNullable(index int) (nullable, ok bool) {
 	if index < 0 || index >= len(r.columns) {
 		return false, false
 	}
-	
+
 	// Check if any row has a null value in this column
 	for _, row := range r.rows {
 		if index < len(row) && row[index] == nil {
 			return true, true
 		}
 	}
-	
+
 	// If we have data but no nulls, it's not nullable (at least not in this result set)
 	if len(r.rows) > 0 {
 		return false, true
 	}
-	
+
 	// If we have no data, we can't determine nullability
 	return false, false
 }
@@ -160,7 +160,7 @@ func convertInterfaceToDriverValue(value interface{}) driver.Value {
 	if value == nil {
 		return nil
 	}
-	
+
 	switch v := value.(type) {
 	case string:
 		// Check if this looks like a timestamp and try to parse it

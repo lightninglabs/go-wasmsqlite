@@ -39,7 +39,7 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 		return nil, fmt.Errorf("invalid DSN: %w", err)
 	}
 
-	bridge, _, err := createWorker(opts)
+	bridge, err := createWorker(opts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create bridge: %w", err)
 	}

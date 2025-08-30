@@ -20,7 +20,7 @@ func NewBridgeAdapter() (*BridgeAdapter, error) {
 	if bridge.IsUndefined() {
 		return nil, fmt.Errorf("sqliteBridge not found - ensure sqlite-bridge.js is loaded")
 	}
-	
+
 	return &BridgeAdapter{
 		bridge: bridge,
 	}, nil
@@ -30,12 +30,12 @@ func NewBridgeAdapter() (*BridgeAdapter, error) {
 func (b *BridgeAdapter) Init() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	
+
 	initMethod := b.bridge.Get("init")
 	if initMethod.IsUndefined() {
 		return fmt.Errorf("sqliteBridge.init method not found")
 	}
-	
+
 	// The bridge auto-initializes on load, so we just return success
 	return nil
 }
@@ -44,25 +44,25 @@ func (b *BridgeAdapter) Init() error {
 func (b *BridgeAdapter) Open(filename, vfs string) (string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	
+
 	fmt.Printf("🔍 Bridge adapter opening database: filename=%s, vfs=%s\n", filename, vfs)
-	
+
 	openMethod := b.bridge.Get("open")
 	if openMethod.IsUndefined() {
 		return "", fmt.Errorf("sqliteBridge.open method not found")
 	}
-	
+
 	fmt.Println("🔍 Found sqliteBridge.open method, calling it...")
-	
+
 	// Call the open method
 	result, err := b.callAsync(openMethod, filename, vfs)
 	if err != nil {
 		fmt.Printf("❌ Bridge open failed: %v\n", err)
 		return "", err
 	}
-	
+
 	fmt.Printf("🔍 Bridge open result: %v\n", result)
-	
+
 	// Extract VFS type from result
 	vfsType := "unknown"
 	if !result.IsUndefined() && !result.Get("vfsType").IsUndefined() {
@@ -71,7 +71,7 @@ func (b *BridgeAdapter) Open(filename, vfs string) (string, error) {
 	} else {
 		fmt.Printf("⚠️ vfsType not found in result\n")
 	}
-	
+
 	return vfsType, nil
 }
 
@@ -79,27 +79,27 @@ func (b *BridgeAdapter) Open(filename, vfs string) (string, error) {
 func (b *BridgeAdapter) Exec(sql string, params []interface{}) (int, int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	
+
 	execMethod := b.bridge.Get("exec")
 	if execMethod.IsUndefined() {
 		return 0, 0, fmt.Errorf("sqliteBridge.exec method not found")
 	}
-	
+
 	// Convert params to JavaScript array
 	jsParams := js.Global().Get("Array").New()
 	for i, param := range params {
 		jsParams.SetIndex(i, param)
 	}
-	
+
 	result, err := b.callAsync(execMethod, sql, jsParams)
 	if err != nil {
 		return 0, 0, err
 	}
-	
+
 	// Extract rowsAffected and lastInsertId
 	rowsAffected := 0
 	lastInsertId := 0
-	
+
 	if !result.IsUndefined() {
 		if !result.Get("rowsAffected").IsUndefined() {
 			rowsAffected = result.Get("rowsAffected").Int()
@@ -108,7 +108,7 @@ func (b *BridgeAdapter) Exec(sql string, params []interface{}) (int, int, error)
 			lastInsertId = result.Get("lastInsertId").Int()
 		}
 	}
-	
+
 	return rowsAffected, lastInsertId, nil
 }
 
@@ -116,27 +116,27 @@ func (b *BridgeAdapter) Exec(sql string, params []interface{}) (int, int, error)
 func (b *BridgeAdapter) Query(sql string, params []interface{}) ([]string, [][]interface{}, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	
+
 	queryMethod := b.bridge.Get("query")
 	if queryMethod.IsUndefined() {
 		return nil, nil, fmt.Errorf("sqliteBridge.query method not found")
 	}
-	
+
 	// Convert params to JavaScript array
 	jsParams := js.Global().Get("Array").New()
 	for i, param := range params {
 		jsParams.SetIndex(i, param)
 	}
-	
+
 	result, err := b.callAsync(queryMethod, sql, jsParams)
 	if err != nil {
 		return nil, nil, err
 	}
-	
+
 	// Extract columns and rows
 	var columns []string
 	var rows [][]interface{}
-	
+
 	if !result.IsUndefined() {
 		// Get columns
 		columnsJS := result.Get("columns")
@@ -146,7 +146,7 @@ func (b *BridgeAdapter) Query(sql string, params []interface{}) ([]string, [][]i
 				columns[i] = columnsJS.Index(i).String()
 			}
 		}
-		
+
 		// Get rows
 		rowsJS := result.Get("rows")
 		if !rowsJS.IsUndefined() && rowsJS.Length() > 0 {
@@ -180,7 +180,7 @@ func (b *BridgeAdapter) Query(sql string, params []interface{}) ([]string, [][]i
 			}
 		}
 	}
-	
+
 	return columns, rows, nil
 }
 
@@ -188,12 +188,12 @@ func (b *BridgeAdapter) Query(sql string, params []interface{}) ([]string, [][]i
 func (b *BridgeAdapter) Begin() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	
+
 	beginMethod := b.bridge.Get("begin")
 	if beginMethod.IsUndefined() {
 		return fmt.Errorf("sqliteBridge.begin method not found")
 	}
-	
+
 	_, err := b.callAsync(beginMethod)
 	return err
 }
@@ -202,12 +202,12 @@ func (b *BridgeAdapter) Begin() error {
 func (b *BridgeAdapter) Commit() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	
+
 	commitMethod := b.bridge.Get("commit")
 	if commitMethod.IsUndefined() {
 		return fmt.Errorf("sqliteBridge.commit method not found")
 	}
-	
+
 	_, err := b.callAsync(commitMethod)
 	return err
 }
@@ -216,12 +216,12 @@ func (b *BridgeAdapter) Commit() error {
 func (b *BridgeAdapter) Rollback() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	
+
 	rollbackMethod := b.bridge.Get("rollback")
 	if rollbackMethod.IsUndefined() {
 		return fmt.Errorf("sqliteBridge.rollback method not found")
 	}
-	
+
 	_, err := b.callAsync(rollbackMethod)
 	return err
 }
@@ -230,12 +230,12 @@ func (b *BridgeAdapter) Rollback() error {
 func (b *BridgeAdapter) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	
+
 	closeMethod := b.bridge.Get("close")
 	if closeMethod.IsUndefined() {
 		return fmt.Errorf("sqliteBridge.close method not found")
 	}
-	
+
 	_, err := b.callAsync(closeMethod)
 	return err
 }
@@ -244,17 +244,17 @@ func (b *BridgeAdapter) Close() error {
 func (b *BridgeAdapter) Dump() (string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	
+
 	dumpMethod := b.bridge.Get("dump")
 	if dumpMethod.IsUndefined() {
 		return "", fmt.Errorf("sqliteBridge.dump method not found")
 	}
-	
+
 	result, err := b.callAsync(dumpMethod)
 	if err != nil {
 		return "", err
 	}
-	
+
 	// Extract dump from result
 	if !result.IsUndefined() && !result.IsNull() {
 		dump := result.Get("dump")
@@ -262,7 +262,7 @@ func (b *BridgeAdapter) Dump() (string, error) {
 			return dump.String(), nil
 		}
 	}
-	
+
 	return "", fmt.Errorf("no dump data received")
 }
 
@@ -270,12 +270,12 @@ func (b *BridgeAdapter) Dump() (string, error) {
 func (b *BridgeAdapter) Load(dump string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	
+
 	loadMethod := b.bridge.Get("load")
 	if loadMethod.IsUndefined() {
 		return fmt.Errorf("sqliteBridge.load method not found")
 	}
-	
+
 	_, err := b.callAsync(loadMethod, dump)
 	return err
 }
@@ -287,13 +287,13 @@ func (b *BridgeAdapter) callAsync(method js.Value, args ...interface{}) (js.Valu
 	if promise.IsUndefined() {
 		return js.Undefined(), fmt.Errorf("method did not return a promise")
 	}
-	
+
 	// Wait for the promise to resolve
 	done := make(chan struct {
 		result js.Value
 		err    error
 	}, 1)
-	
+
 	// Handle promise resolution
 	then := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		defer func() {
@@ -304,14 +304,14 @@ func (b *BridgeAdapter) callAsync(method js.Value, args ...interface{}) (js.Valu
 				}{js.Undefined(), fmt.Errorf("promise then handler panicked: %v", r)}
 			}
 		}()
-		
+
 		var result js.Value
 		if len(args) > 0 {
 			result = args[0]
 		} else {
 			result = js.Undefined()
 		}
-		
+
 		// Check if result indicates error
 		if !result.IsUndefined() && !result.Get("ok").IsUndefined() {
 			if !result.Get("ok").Bool() {
@@ -326,7 +326,7 @@ func (b *BridgeAdapter) callAsync(method js.Value, args ...interface{}) (js.Valu
 				return nil
 			}
 		}
-		
+
 		done <- struct {
 			result js.Value
 			err    error
@@ -334,7 +334,7 @@ func (b *BridgeAdapter) callAsync(method js.Value, args ...interface{}) (js.Valu
 		return nil
 	})
 	defer then.Release()
-	
+
 	// Handle promise rejection
 	catch := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		defer func() {
@@ -345,7 +345,7 @@ func (b *BridgeAdapter) callAsync(method js.Value, args ...interface{}) (js.Valu
 				}{js.Undefined(), fmt.Errorf("promise catch handler panicked: %v", r)}
 			}
 		}()
-		
+
 		errorMsg := "unknown error"
 		if len(args) > 0 {
 			error := args[0]
@@ -361,7 +361,7 @@ func (b *BridgeAdapter) callAsync(method js.Value, args ...interface{}) (js.Valu
 			}
 			fmt.Printf("🔍 JavaScript error details: %s\n", errorMsg)
 		}
-		
+
 		done <- struct {
 			result js.Value
 			err    error
@@ -369,10 +369,10 @@ func (b *BridgeAdapter) callAsync(method js.Value, args ...interface{}) (js.Valu
 		return nil
 	})
 	defer catch.Release()
-	
+
 	// Attach handlers
 	promise.Call("then", then).Call("catch", catch)
-	
+
 	// Wait for completion
 	result := <-done
 	return result.result, result.err
