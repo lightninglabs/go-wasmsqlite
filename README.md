@@ -8,7 +8,7 @@ A WebAssembly SQLite driver for Go that enables sqlc-generated code to run in th
 - 💾 Persistent storage using OPFS (Origin Private File System)
 - 🔄 Full transaction support (BEGIN/COMMIT/ROLLBACK)
 - ⚡ Works with any sqlc-generated SQLite code
-- 📦 **Embedded SQLite WASM assets** - no manual file copying needed
+- 📦 Direct SQLite WASM integration - uses official SQLite builds
 - 🔍 VFS detection to know if using OPFS or in-memory storage
 - 💼 Database dump/load functionality for backups and migrations
 - 🏗️ Built-in Web Worker bridge for optimal performance
@@ -68,80 +68,38 @@ sqlc-wasm/
 ├── Makefile              # Build automation
 ├── go.mod & go.sum      # Go module files
 ├── *.go                 # Driver source files
-├── embed.go            # Embedded assets handler
-├── assets/             # Embedded SQLite WASM files
+├── bridge/              # JavaScript bridge
+│   └── sqlite-bridge.js # Handcrafted bridge file
+├── assets/              # SQLite WASM files (fetched)
 │   ├── sqlite3.wasm
 │   ├── sqlite3.js
 │   ├── sqlite3-worker1.js
 │   ├── sqlite3-worker1-promiser.js
-│   ├── sqlite3-opfs-async-proxy.js
-│   └── bridge.worker.js
-├── worker/             # TypeScript worker source
-│   ├── src/           # TypeScript source files
-│   ├── dist/          # Built JavaScript (generated)
-│   ├── package.json
-│   └── tsconfig.json
-└── example/           # Demo application
-    ├── main.go        # Demo Go code
-    ├── index.html     # Demo UI
-    ├── server.js      # Dev server with CORS headers
-    └── database/      # SQLC generated code
+│   └── sqlite3-opfs-async-proxy.js
+├── scripts/             # Build scripts
+│   └── fetch-sqlite-wasm.sh # Downloads SQLite WASM
+└── example/             # Demo application
+    ├── main.go          # Demo Go code
+    ├── index.html       # Demo UI
+    ├── server.js        # Dev server with CORS headers
+    └── generated/       # SQLC generated code
 ```
 
-## Using Embedded Assets
+## Setup
 
-The driver includes embedded SQLite WASM files, eliminating the need to manually download and serve them.
+The project uses official SQLite WASM builds:
 
-### Option 1: Use the Built-in HTTP Handler
-
-```go
-import "github.com/sputn1ck/sqlc-wasm"
-
-// Create an asset handler with proper CORS headers
-handler := wasmsqlite.NewAssetHandler()
-
-// Serve on /wasm/ path
-http.Handle("/wasm/", http.StripPrefix("/wasm", handler))
-
-// The following files will be available:
-// /wasm/sqlite3.wasm
-// /wasm/sqlite3.js
-// /wasm/sqlite3-worker1.js
-// /wasm/sqlite3-worker1-promiser.js
-// /wasm/sqlite3-opfs-async-proxy.js
-// /wasm/bridge.worker.js
-```
-
-### Option 2: Access Raw Embedded Data
-
-```go
-import "github.com/sputn1ck/sqlc-wasm"
-
-// Access embedded files directly
-wasmBytes := wasmsqlite.SQLite3WASM        // []byte
-jsCode := wasmsqlite.SQLite3JS              // string
-workerCode := wasmsqlite.BridgeWorkerJS     // string
-```
-
-### Option 3: Extract to Filesystem
-
-```go
-// Extract all embedded assets to ./static/
-err := wasmsqlite.ExtractAssets("./static/")
-```
-
-## Manual Setup (Without Embedded Assets)
-
-If you prefer to manage SQLite files manually:
-
-### 1. Obtain SQLite WASM
+### 1. Download SQLite WASM Assets
 
 ```bash
-# Download SQLite WASM (latest version)
-curl -L https://sqlite.org/2024/sqlite-wasm-3460000.zip -o sqlite-wasm.zip
-unzip sqlite-wasm.zip
-cp sqlite-wasm-*/jswasm/sqlite3.wasm ./web/
+# Fetch SQLite WASM from official source
+make fetch-assets
+
+# Or run the script directly
+./scripts/fetch-sqlite-wasm.sh
 ```
+
+This downloads SQLite WASM v3.50.4 and verifies its SHA3-256 checksum.
 
 ### 2. Build Your Application
 
@@ -235,16 +193,13 @@ case wasmsqlite.VFSTypeMemory:
 
 ## Development
 
-### Building the TypeScript Worker
+### Building
 
 ```bash
-# Install dependencies
-make install-deps
+# Initial setup (fetches SQLite WASM)
+make setup
 
-# Build the worker
-make build-worker
-
-# Or build everything
+# Build everything
 make build
 ```
 
@@ -265,9 +220,9 @@ make dev
 
 ```bash
 make help              # Show all available commands
-make setup            # Initial setup
+make setup            # Initial setup (fetch SQLite WASM)
+make fetch-assets     # Download SQLite WASM from official source
 make build            # Build everything
-make build-worker     # Build TypeScript worker only
 make build-wasm       # Build Go WASM only
 make serve            # Run demo server
 make test             # Run tests
@@ -288,7 +243,7 @@ make clean            # Clean build artifacts
 └─────────────────────────────────────────┘
                     ↕
 ┌─────────────────────────────────────────┐
-│      JavaScript Bridge (bridge.js)      │
+│   JavaScript Bridge (sqlite-bridge.js)  │
 └─────────────────────────────────────────┘
                     ↕
 ┌─────────────────────────────────────────┐

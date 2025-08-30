@@ -1,7 +1,12 @@
-.PHONY: all build clean test serve help build-wasm build-example setup
+.PHONY: all build clean test serve help build-wasm build-example setup fetch-assets
 
 # Default target
 all: build
+
+# Fetch SQLite WASM assets
+fetch-assets:
+	@echo "📦 Fetching SQLite WASM assets..."
+	@./scripts/fetch-sqlite-wasm.sh
 
 # Build the main WASM module
 build-wasm:
@@ -10,29 +15,22 @@ build-wasm:
 	@echo "✅ WASM module built"
 
 # Build example
-build-example: build-wasm
+build-example: fetch-assets build-wasm
 	@echo "🔨 Building example..."
 	cd example && GOOS=js GOARCH=wasm go build -o main.wasm ./main.go
 	cd example && cp $$(go env GOROOT)/lib/wasm/wasm_exec.js .
+	@echo "📦 Copying bridge and assets to example..."
+	cp bridge/sqlite-bridge.js example/
+	cp assets/*.js example/
+	cp assets/*.wasm example/
 	@echo "✅ Example built"
 
 # Build everything
 build: build-example
 	@echo "✅ All components built successfully"
 
-# Setup SQLite files in assets
-setup-sqlite:
-	@echo "📥 Setting up SQLite WASM files..."
-	@if [ ! -f assets/sqlite3.wasm ]; then \
-		echo "⚠️  SQLite WASM files not found in assets/"; \
-		echo "Please download SQLite WASM files and place them in assets/"; \
-		echo "Required files: sqlite3.wasm, sqlite3.js, sqlite3-worker1.js, sqlite3-worker1-promiser.js, sqlite3-opfs-async-proxy.js"; \
-	else \
-		echo "✅ SQLite files found in assets/"; \
-	fi
-
 # Initial setup
-setup: setup-sqlite
+setup: fetch-assets
 	@echo "✅ Setup complete"
 
 # Serve the demo locally
@@ -53,6 +51,8 @@ clean:
 	@echo "🧹 Cleaning build artifacts..."
 	rm -f main.wasm
 	rm -f example/main.wasm example/wasm_exec.js
+	rm -f example/sqlite3.wasm
+	rm -rf assets
 	@echo "✅ Clean complete"
 
 # Development mode - watch for changes and rebuild
@@ -74,7 +74,8 @@ check:
 help:
 	@echo "sqlc-wasm Makefile Commands:"
 	@echo ""
-	@echo "  make setup        - Initial setup (setup SQLite files)"
+	@echo "  make setup        - Initial setup (fetch SQLite WASM assets)"
+	@echo "  make fetch-assets - Download SQLite WASM from official source"
 	@echo "  make build        - Build all components"
 	@echo "  make build-wasm   - Build Go WASM module only"
 	@echo "  make build-example- Build example only"

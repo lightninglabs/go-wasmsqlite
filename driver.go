@@ -38,31 +38,30 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid DSN: %w", err)
 	}
-	
+
 	bridge, _, err := createWorker(opts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create bridge: %w", err)
 	}
-	
+
 	// Create bridge adapter
 	adapter, err := NewBridgeAdapter()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create bridge adapter: %w", err)
 	}
-	
+
 	// Open database through bridge
 	vfsType, err := adapter.Open(opts.File, opts.VFS)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
-	
+
 	conn := &Conn{
 		bridge:  bridge,
 		adapter: adapter,
-		opts:    opts,
 		vfsType: vfsType,
 	}
-	
+
 	return conn, nil
 }
 
@@ -75,7 +74,6 @@ func (c *Connector) Driver() driver.Driver {
 type Conn struct {
 	bridge  js.Value
 	adapter *BridgeAdapter
-	opts    *Options
 	inTx    bool
 	vfsType string
 }
@@ -85,7 +83,7 @@ func (c *Conn) Prepare(query string) (driver.Stmt, error) {
 	if c.adapter == nil {
 		return nil, driver.ErrBadConn
 	}
-	
+
 	return &Stmt{
 		conn:  c,
 		query: query,
@@ -113,20 +111,20 @@ func (c *Conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 	if c.adapter == nil {
 		return nil, driver.ErrBadConn
 	}
-	
+
 	if c.inTx {
 		return nil, fmt.Errorf("already in transaction")
 	}
-	
+
 	// SQLite doesn't support read-only transactions or isolation levels in the same way
 	// We'll just start a regular transaction
 	err := c.adapter.Begin()
 	if err != nil {
 		return nil, err
 	}
-	
+
 	c.inTx = true
-	
+
 	return &Tx{conn: c}, nil
 }
 
@@ -135,18 +133,18 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	if c.adapter == nil {
 		return nil, driver.ErrBadConn
 	}
-	
+
 	// Convert params to interface{} slice
 	paramIfaces := make([]interface{}, len(args))
 	for i, arg := range args {
 		paramIfaces[i] = arg.Value
 	}
-	
+
 	rowsAffected, lastInsertID, err := c.adapter.Exec(query, paramIfaces)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	rowsAff := int64(rowsAffected)
 	lastInsID := int64(lastInsertID)
 	return &Result{
@@ -155,29 +153,29 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	}, nil
 }
 
-// QueryContext implements driver.QueryerContext  
+// QueryContext implements driver.QueryerContext
 func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	if c.adapter == nil {
 		return nil, driver.ErrBadConn
 	}
-	
+
 	// Convert params to interface{} slice
 	paramIfaces := make([]interface{}, len(args))
 	for i, arg := range args {
 		paramIfaces[i] = arg.Value
 	}
-	
+
 	columns, rows, err := c.adapter.Query(query, paramIfaces)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	fmt.Printf("Query returned %d columns: %v\n", len(columns), columns)
 	fmt.Printf("Query returned %d rows\n", len(rows))
 	if len(rows) > 0 {
 		fmt.Printf("First row: %v\n", rows[0])
 	}
-	
+
 	return &Rows{
 		columns: columns,
 		rows:    rows,
@@ -190,7 +188,7 @@ func (c *Conn) Ping(ctx context.Context) error {
 	if c.adapter == nil {
 		return driver.ErrBadConn
 	}
-	
+
 	// Try a simple query to check if connection is alive
 	_, err := c.QueryContext(ctx, "SELECT 1", nil)
 	return err
@@ -285,7 +283,7 @@ func (c *Conn) Dump(ctx context.Context) (string, error) {
 	if c.adapter == nil {
 		return "", driver.ErrBadConn
 	}
-	
+
 	return c.adapter.Dump()
 }
 
@@ -294,6 +292,6 @@ func (c *Conn) Load(ctx context.Context, dump string) error {
 	if c.adapter == nil {
 		return driver.ErrBadConn
 	}
-	
+
 	return c.adapter.Load(dump)
 }
