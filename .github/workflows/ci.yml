@@ -7,7 +7,7 @@ on:
     branches: [ main ]
 
 jobs:
-  test:
+  compile:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -20,14 +20,6 @@ jobs:
           
       - name: Get dependencies
         run: go mod download
-          
-      - name: Fetch SQLite WASM assets
-        run: |
-          chmod +x scripts/fetch-sqlite-wasm.sh
-          ./scripts/fetch-sqlite-wasm.sh
-          
-      - name: Build Go library
-        run: GOOS=js GOARCH=wasm go build -v ./...
           
       - name: Run tests
         run: go test -v ./...

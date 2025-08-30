@@ -26,11 +26,6 @@ jobs:
         with:
           go-version: '1.21'
           
-      - name: Fetch SQLite WASM assets
-        run: |
-          chmod +x scripts/fetch-sqlite-wasm.sh
-          ./scripts/fetch-sqlite-wasm.sh
-          
       - name: Build Example
         run: make build-example
           
