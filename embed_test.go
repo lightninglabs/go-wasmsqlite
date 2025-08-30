@@ -64,7 +64,7 @@ func TestEmbeddedAssets(t *testing.T) {
 
 func TestExtractAssets(t *testing.T) {
 	// Create temp directory
-	tmpDir, err := os.MkdirTemp("", "sqlc-wasm-test-*")
+	tmpDir, err := os.MkdirTemp("", "go-sqlite3-wasm-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}

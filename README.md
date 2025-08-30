@@ -1,13 +1,13 @@
-# sqlc-wasm
+# go-sqlite3-wasm
 
-A WebAssembly SQLite driver for Go that enables sqlc-generated code to run in the browser with OPFS persistence.
+A WebAssembly SQLite driver for Go that enables database/sql code to run in the browser with OPFS persistence.
 
 ## Features
 
 - 🚀 Run SQLite databases entirely in the browser
 - 💾 Persistent storage using OPFS (Origin Private File System)
 - 🔄 Full transaction support (BEGIN/COMMIT/ROLLBACK)
-- ⚡ Works with any sqlc-generated SQLite code
+- ⚡ Works with standard database/sql interface
 - 📦 **Embedded SQLite WASM assets** - everything included with `go get`
 - 🔍 VFS detection to know if using OPFS or in-memory storage
 - 💼 Database dump/load functionality for backups and migrations
@@ -23,7 +23,7 @@ A WebAssembly SQLite driver for Go that enables sqlc-generated code to run in th
 ## Installation
 
 ```bash
-go get github.com/sputn1ck/sqlc-wasm
+go get github.com/sputn1ck/go-sqlite3-wasm
 ```
 
 All SQLite WASM assets are embedded in the module - no additional downloads needed!
@@ -46,7 +46,7 @@ Visit http://localhost:8081 to see the demo in action.
 ```go
 import (
     "database/sql"
-    _ "github.com/sputn1ck/sqlc-wasm"
+    _ "github.com/sputn1ck/go-sqlite3-wasm"
 )
 
 func main() {
@@ -57,7 +57,7 @@ func main() {
     }
     defer db.Close()
     
-    // Use with sqlc-generated code as normal
+    // Use with database/sql as normal
     queries := database.New(db)
     // ... your queries here
 }
@@ -66,7 +66,7 @@ func main() {
 ## Project Structure
 
 ```
-sqlc-wasm/
+go-sqlite3-wasm/
 ├── Makefile              # Build automation
 ├── go.mod & go.sum      # Go module files
 ├── *.go                 # Driver source files
@@ -94,7 +94,7 @@ SQLite WASM assets (v3.50.4) are embedded in the module. You have several option
 ### Option 1: Extract to Filesystem
 
 ```go
-import "github.com/sputn1ck/sqlc-wasm"
+import "github.com/sputn1ck/go-sqlite3-wasm"
 
 // Extract all assets to a directory
 err := wasmsqlite.ExtractAssets("./static/wasm")
@@ -108,7 +108,7 @@ if err != nil {
 ### Option 2: Serve via HTTP Handler
 
 ```go
-import "github.com/sputn1ck/sqlc-wasm"
+import "github.com/sputn1ck/go-sqlite3-wasm"
 
 // Create an asset handler with proper CORS headers
 handler := wasmsqlite.AssetHandler()
@@ -128,7 +128,7 @@ http.Handle("/wasm/", http.StripPrefix("/wasm", handler))
 ### Option 3: Access Individual Assets
 
 ```go
-import "github.com/sputn1ck/sqlc-wasm"
+import "github.com/sputn1ck/go-sqlite3-wasm"
 
 // Get specific assets
 wasmBytes, _ := wasmsqlite.GetSQLiteWASM()
@@ -184,7 +184,7 @@ db, err := sql.Open("wasmsqlite", "file=/data.db?vfs=opfs-sahpool&busy_timeout=1
 Export and import entire databases as SQL:
 
 ```go
-import wasmsqlite "github.com/sputn1ck/sqlc-wasm"
+import wasmsqlite "github.com/sputn1ck/go-sqlite3-wasm"
 
 // Export database
 dump, err := wasmsqlite.DumpDatabase(db)
@@ -321,7 +321,7 @@ w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
 │  │     SQLC Generated Code           │  │
 │  └───────────────────────────────────┘  │
 │  ┌───────────────────────────────────┐  │
-│  │     sqlc-wasm Driver              │  │
+│  │     go-sqlite3-wasm Driver        │  │
 │  └───────────────────────────────────┘  │
 └─────────────────────────────────────────┘
                     ↕
@@ -365,4 +365,4 @@ MIT
 
 - [SQLite](https://sqlite.org/) for the amazing database
 - [@sqlite.org/sqlite-wasm](https://sqlite.org/wasm) for the WebAssembly build
-- [sqlc](https://sqlc.dev/) for code generation
+- [database/sql](https://pkg.go.dev/database/sql) for the standard interface

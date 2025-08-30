@@ -1,7 +1,7 @@
-# Claude Developer Guide for sqlc-wasm
+# Claude Developer Guide for go-sqlite3-wasm
 
 ## Project Overview
-WebAssembly SQLite driver for Go that enables sqlc-generated code to run in browsers with OPFS persistence. Users can write standard Go database code that runs entirely client-side.
+WebAssembly SQLite driver for Go that enables database/sql code to run in browsers with OPFS persistence. Users can write standard Go database code that runs entirely client-side.
 
 ## Core Architecture
 ```
@@ -10,7 +10,7 @@ Go App (WASM) → Go Driver → JS Bridge → SQLite Worker → OPFS Storage
 
 ## Directory Structure
 ```
-sqlc-wasm/
+go-sqlite3-wasm/
 ├── bridge/                 # JavaScript bridge between Go and SQLite WASM
 │   └── sqlite-bridge.js   # Handcrafted bridge file
 │
@@ -27,7 +27,7 @@ sqlc-wasm/
 ├── example/               # Demo application
 │   ├── main.go           # Example Go code using the driver
 │   ├── index.html        # Demo UI
-│   ├── generated/        # sqlc-generated database code
+│   ├── generated/        # database code (can be sqlc-generated)
 │   └── [JS and WASM files copied here during build]
 │
 ├── *.go                   # Driver implementation files
@@ -61,7 +61,7 @@ sqlc-wasm/
 - **Files**: Core SQLite WASM, workers, and OPFS proxy
 
 ### 4. Example (`example/`)
-- **Purpose**: Demonstrates driver usage with sqlc-generated code
+- **Purpose**: Demonstrates driver usage with database/sql code
 - **Note**: Bridge and assets are copied here during build
 - **Server**: Requires CORS headers for OPFS support
 
@@ -128,11 +128,11 @@ SQLite WASM uses Web Workers with these files:
 ### VFS Fallback
 If OPFS unavailable, automatically falls back to in-memory storage.
 
-### sqlc Integration
-Example uses sqlc-generated code in `example/generated/`:
+### database/sql Integration
+Example uses database/sql code in `example/generated/`:
 - `schema.sql` - Database schema
-- `queries.sql` - SQL queries
-- `sqlc.yaml` - sqlc configuration
+- `queries.sql` - SQL queries (if using sqlc)
+- `sqlc.yaml` - sqlc configuration (optional)
 
 ## Testing Workflow
 1. `make clean` - Start fresh

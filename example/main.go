@@ -9,8 +9,8 @@ import (
 	"log"
 	"syscall/js"
 
-	database "github.com/sputn1ck/sqlc-wasm/example/generated"
-	wasmsqlite "github.com/sputn1ck/sqlc-wasm"
+	wasmsqlite "github.com/sputn1ck/go-sqlite3-wasm"
+	database "github.com/sputn1ck/go-sqlite3-wasm/example/generated"
 )
 
 var (
@@ -27,7 +27,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("❌ Failed to open database: %v", err)
 	}
-	
+
 	queries = database.New(db)
 	fmt.Println("✅ Database initialized!")
 
@@ -68,7 +68,6 @@ func openDB() (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
-	
 
 	// Create tables
 	schema := `
@@ -412,20 +411,20 @@ func deletePostJS(this js.Value, p []js.Value) interface{} {
 func clearDatabaseJS(this js.Value, p []js.Value) interface{} {
 	go func() {
 		ctx := context.Background()
-		
+
 		// Delete all data
 		_, err := db.ExecContext(ctx, "DELETE FROM posts")
 		if err != nil {
 			log.Printf("❌ Failed to delete posts: %v", err)
 			return
 		}
-		
+
 		_, err = db.ExecContext(ctx, "DELETE FROM users")
 		if err != nil {
 			log.Printf("❌ Failed to delete users: %v", err)
 			return
 		}
-		
+
 		fmt.Println("✅ Database cleared successfully!")
 	}()
 
@@ -439,10 +438,10 @@ func dumpDatabaseJS(this js.Value, p []js.Value) interface{} {
 			log.Printf("❌ Failed to dump database: %v", err)
 			return
 		}
-		
+
 		fmt.Println("✅ Database dumped successfully!")
 		fmt.Printf("📄 Dump size: %d bytes\n", len(dump))
-		
+
 		// Call the JavaScript callback if it exists
 		callback := js.Global().Get("onDatabaseDumped")
 		if callback.Truthy() && callback.Type() == js.TypeFunction {
@@ -453,7 +452,7 @@ func dumpDatabaseJS(this js.Value, p []js.Value) interface{} {
 			fmt.Println("💾 Dump saved to window.lastDatabaseDump")
 		}
 	}()
-	
+
 	return nil
 }
 
@@ -462,18 +461,18 @@ func loadDatabaseJS(this js.Value, p []js.Value) interface{} {
 		log.Println("❌ loadDatabase requires SQL dump parameter")
 		return nil
 	}
-	
+
 	dump := p[0].String()
-	
+
 	go func() {
 		err := wasmsqlite.LoadDatabase(db, dump)
 		if err != nil {
 			log.Printf("❌ Failed to load database: %v", err)
 			return
 		}
-		
+
 		fmt.Println("✅ Database loaded successfully!")
 	}()
-	
+
 	return nil
 }

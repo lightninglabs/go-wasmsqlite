@@ -72,7 +72,7 @@ check:
 
 # Help
 help:
-	@echo "sqlc-wasm Makefile Commands:"
+	@echo "go-sqlite3-wasm Makefile Commands:"
 	@echo ""
 	@echo "  make setup        - Initial setup (fetch SQLite WASM assets)"
 	@echo "  make fetch-assets - Download SQLite WASM from official source"
