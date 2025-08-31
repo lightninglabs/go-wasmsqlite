@@ -234,13 +234,17 @@ case wasmsqlite.VFSTypeMemory:
 
 ## Database Migrations with golang-migrate
 
-The example demonstrates using golang-migrate for database schema management:
+go-sqlite3-wasm includes built-in support for [golang-migrate](https://github.com/golang-migrate/migrate), allowing you to manage database schema migrations in your WASM applications.
+
+### Using the MigrateDriver
 
 ```go
 import (
     "embed"
+    "database/sql"
     "github.com/golang-migrate/migrate/v4"
     "github.com/golang-migrate/migrate/v4/source/iofs"
+    wasmsqlite "github.com/sputn1ck/go-sqlite3-wasm"
 )
 
 //go:embed migrations/*.sql
@@ -248,20 +252,71 @@ var migrationFS embed.FS
 
 func runMigrations(db *sql.DB) error {
     // Create source from embedded filesystem
-    sourceDriver, _ := iofs.New(migrationFS, "migrations")
+    sourceDriver, err := iofs.New(migrationFS, "migrations")
+    if err != nil {
+        return err
+    }
     
-    // Create custom database driver for WASM SQLite
-    dbDriver, _ := NewWASMSQLiteDriver(db)
+    // Create the WASM SQLite migrate driver
+    dbDriver, err := wasmsqlite.NewMigrateDriver(db)
+    if err != nil {
+        return err
+    }
     
-    // Create and run migrations
-    m, _ := migrate.NewWithInstance("iofs", sourceDriver, "wasmsqlite", dbDriver)
+    // Create migrate instance
+    m, err := migrate.NewWithInstance("iofs", sourceDriver, "wasmsqlite", dbDriver)
+    if err != nil {
+        return err
+    }
+    
+    // Run migrations to latest version
     return m.Up()
 }
 ```
 
-Migration files follow the naming pattern:
-- `001_initial_schema.up.sql` - Apply migration
-- `001_initial_schema.down.sql` - Rollback migration
+### Migration Files
+
+Migration files follow the standard golang-migrate naming pattern:
+- `{version}_{description}.up.sql` - Apply migration
+- `{version}_{description}.down.sql` - Rollback migration
+
+Example:
+```
+migrations/
+├── 001_initial_schema.up.sql
+├── 001_initial_schema.down.sql
+├── 002_add_users_table.up.sql
+└── 002_add_users_table.down.sql
+```
+
+### MigrateDriver API
+
+The `MigrateDriver` implements the `database.Driver` interface from golang-migrate:
+
+```go
+// Create a new migrate driver
+driver, err := wasmsqlite.NewMigrateDriver(db)
+
+// Get current migration version
+version, dirty, err := driver.Version()
+
+// Set migration version
+err = driver.SetVersion(version, dirty)
+
+// Run a migration
+err = driver.Run(migrationReader)
+
+// Drop all tables
+err = driver.Drop()
+```
+
+### Features
+
+- **Automatic version tracking** - Migrations are tracked in a `schema_migrations` table
+- **Transaction support** - Each migration runs in a transaction for atomicity
+- **Dirty state handling** - Detects and handles failed migrations
+- **SQL statement splitting** - Correctly handles multi-statement migrations
+- **Embedded migrations** - Use `embed.FS` to bundle migrations in your WASM binary
 
 ## Development
 

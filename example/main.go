@@ -95,7 +95,7 @@ func runMigrations(db *sql.DB) error {
 	}
 
 	// Create custom database driver for WASM SQLite
-	dbDriver, err := NewWASMSQLiteDriver(db)
+	dbDriver, err := wasmsqlite.NewMigrateDriver(db)
 	if err != nil {
 		return fmt.Errorf("failed to create database driver: %w", err)
 	}
@@ -140,7 +140,7 @@ func runMigrations(db *sql.DB) error {
 
 func getMigrationStatusJS(this js.Value, p []js.Value) interface{} {
 	go func() {
-		driver, err := NewWASMSQLiteDriver(db)
+		driver, err := wasmsqlite.NewMigrateDriver(db)
 		if err != nil {
 			log.Printf("❌ Failed to create driver: %v", err)
 			return

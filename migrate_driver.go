@@ -1,6 +1,6 @@
 //go:build js && wasm
 
-package main
+package wasmsqlite
 
 import (
 	"database/sql"
@@ -12,18 +12,20 @@ import (
 	"github.com/hashicorp/go-multierror"
 )
 
-// WASMSQLiteDriver implements the database.Driver interface for golang-migrate
-type WASMSQLiteDriver struct {
+// MigrateDriver implements the database.Driver interface for golang-migrate.
+// It provides migration support for SQLite databases running in WebAssembly.
+type MigrateDriver struct {
 	db *sql.DB
 }
 
-// NewWASMSQLiteDriver creates a new migrate driver for WASM SQLite
-func NewWASMSQLiteDriver(db *sql.DB) (database.Driver, error) {
+// NewMigrateDriver creates a new migrate driver for WASM SQLite.
+// The returned driver can be used with golang-migrate to manage database migrations.
+func NewMigrateDriver(db *sql.DB) (database.Driver, error) {
 	if db == nil {
 		return nil, fmt.Errorf("db cannot be nil")
 	}
 	
-	driver := &WASMSQLiteDriver{
+	driver := &MigrateDriver{
 		db: db,
 	}
 	
@@ -35,7 +37,7 @@ func NewWASMSQLiteDriver(db *sql.DB) (database.Driver, error) {
 	return driver, nil
 }
 
-func (d *WASMSQLiteDriver) ensureVersionTable() error {
+func (d *MigrateDriver) ensureVersionTable() error {
 	query := `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version INTEGER PRIMARY KEY,
 		dirty BOOLEAN NOT NULL DEFAULT FALSE
@@ -44,30 +46,31 @@ func (d *WASMSQLiteDriver) ensureVersionTable() error {
 	return err
 }
 
-// Open returns the underlying database connection
-func (d *WASMSQLiteDriver) Open(url string) (database.Driver, error) {
-	return nil, fmt.Errorf("Open is not supported for WASMSQLiteDriver, use NewWASMSQLiteDriver instead")
+// Open returns the underlying database connection.
+// This method is not supported for MigrateDriver - use NewMigrateDriver instead.
+func (d *MigrateDriver) Open(url string) (database.Driver, error) {
+	return nil, fmt.Errorf("Open is not supported for MigrateDriver, use NewMigrateDriver instead")
 }
 
 // Close closes the underlying database connection
-func (d *WASMSQLiteDriver) Close() error {
+func (d *MigrateDriver) Close() error {
 	// We don't close the connection here as it's managed externally
 	return nil
 }
 
 // Lock acquires a lock (no-op for SQLite in WASM)
-func (d *WASMSQLiteDriver) Lock() error {
+func (d *MigrateDriver) Lock() error {
 	// SQLite has built-in locking, no need for additional locking in WASM context
 	return nil
 }
 
 // Unlock releases the lock (no-op for SQLite in WASM)
-func (d *WASMSQLiteDriver) Unlock() error {
+func (d *MigrateDriver) Unlock() error {
 	return nil
 }
 
 // Run executes a migration
-func (d *WASMSQLiteDriver) Run(migration io.Reader) error {
+func (d *MigrateDriver) Run(migration io.Reader) error {
 	migrationBytes, err := io.ReadAll(migration)
 	if err != nil {
 		return err
@@ -103,7 +106,7 @@ func (d *WASMSQLiteDriver) Run(migration io.Reader) error {
 }
 
 // SetVersion sets the current migration version
-func (d *WASMSQLiteDriver) SetVersion(version int, dirty bool) error {
+func (d *MigrateDriver) SetVersion(version int, dirty bool) error {
 	query := `DELETE FROM schema_migrations`
 	if _, err := d.db.Exec(query); err != nil {
 		return err
@@ -120,7 +123,7 @@ func (d *WASMSQLiteDriver) SetVersion(version int, dirty bool) error {
 }
 
 // Version returns the current migration version
-func (d *WASMSQLiteDriver) Version() (version int, dirty bool, err error) {
+func (d *MigrateDriver) Version() (version int, dirty bool, err error) {
 	query := `SELECT version, dirty FROM schema_migrations LIMIT 1`
 	
 	row := d.db.QueryRow(query)
@@ -133,7 +136,7 @@ func (d *WASMSQLiteDriver) Version() (version int, dirty bool, err error) {
 }
 
 // Drop drops all tables
-func (d *WASMSQLiteDriver) Drop() error {
+func (d *MigrateDriver) Drop() error {
 	// Get all table names
 	query := `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`
 	rows, err := d.db.Query(query)
