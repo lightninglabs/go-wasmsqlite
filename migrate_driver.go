@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/golang-migrate/migrate/v4/database"
 	"github.com/hashicorp/go-multierror"
@@ -14,6 +13,13 @@ import (
 
 // MigrateDriver implements the database.Driver interface for golang-migrate.
 // It provides migration support for SQLite databases running in WebAssembly.
+//
+// This driver is based on the official golang-migrate sqlite3 driver but adapted
+// for WASM constraints:
+// - No file-based operations (uses existing *sql.DB connection)
+// - No locking needed (WASM is single-threaded)
+// - Simplified configuration (no x-migrations-table or x-no-tx-wrap options)
+// - Always uses transactions for safety
 type MigrateDriver struct {
 	db *sql.DB
 }
@@ -38,10 +44,11 @@ func NewMigrateDriver(db *sql.DB) (database.Driver, error) {
 }
 
 func (d *MigrateDriver) ensureVersionTable() error {
-	query := `CREATE TABLE IF NOT EXISTS schema_migrations (
-		version INTEGER PRIMARY KEY,
-		dirty BOOLEAN NOT NULL DEFAULT FALSE
-	)`
+	// Create both table and unique index like the original driver
+	query := `
+	CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER, dirty BOOLEAN);
+	CREATE UNIQUE INDEX IF NOT EXISTS version_unique ON schema_migrations (version);
+	`
 	_, err := d.db.Exec(query)
 	return err
 }
@@ -78,45 +85,56 @@ func (d *MigrateDriver) Run(migration io.Reader) error {
 	
 	query := string(migrationBytes)
 	
-	// Split by semicolons but be careful with strings
-	statements := splitSQLStatements(query)
-	
-	// Execute each statement in a transaction
+	// Execute migration in a transaction
 	tx, err := d.db.Begin()
 	if err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			tx.Rollback()
-		}
-	}()
-	
-	for _, stmt := range statements {
-		stmt = strings.TrimSpace(stmt)
-		if stmt == "" {
-			continue
-		}
-		if _, err = tx.Exec(stmt); err != nil {
-			return fmt.Errorf("failed to execute statement: %v\nStatement: %s", err, stmt)
-		}
+		return fmt.Errorf("transaction start failed: %w", err)
 	}
 	
-	return tx.Commit()
+	// SQLite can handle multiple statements in a single Exec call
+	// when they're separated by semicolons, similar to the original driver
+	if _, err := tx.Exec(query); err != nil {
+		if errRollback := tx.Rollback(); errRollback != nil {
+			err = multierror.Append(err, errRollback)
+		}
+		return fmt.Errorf("migration failed: %w", err)
+	}
+	
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("transaction commit failed: %w", err)
+	}
+	
+	return nil
 }
 
 // SetVersion sets the current migration version
 func (d *MigrateDriver) SetVersion(version int, dirty bool) error {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return fmt.Errorf("transaction start failed: %w", err)
+	}
+	
 	query := `DELETE FROM schema_migrations`
-	if _, err := d.db.Exec(query); err != nil {
+	if _, err := tx.Exec(query); err != nil {
+		tx.Rollback()
 		return err
 	}
 	
-	if version >= 0 {
+	// Also re-write the schema version for nil dirty versions to prevent
+	// empty schema version for failed down migration on the first migration
+	// See: https://github.com/golang-migrate/migrate/issues/330
+	if version >= 0 || (version == database.NilVersion && dirty) {
 		query = `INSERT INTO schema_migrations (version, dirty) VALUES (?, ?)`
-		if _, err := d.db.Exec(query, version, dirty); err != nil {
+		if _, err := tx.Exec(query, version, dirty); err != nil {
+			if errRollback := tx.Rollback(); errRollback != nil {
+				err = multierror.Append(err, errRollback)
+			}
 			return err
 		}
+	}
+	
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("transaction commit failed: %w", err)
 	}
 	
 	return nil
@@ -138,7 +156,7 @@ func (d *MigrateDriver) Version() (version int, dirty bool, err error) {
 // Drop drops all tables
 func (d *MigrateDriver) Drop() error {
 	// Get all table names
-	query := `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`
+	query := `SELECT name FROM sqlite_master WHERE type = 'table'`
 	rows, err := d.db.Query(query)
 	if err != nil {
 		return err
@@ -159,58 +177,18 @@ func (d *MigrateDriver) Drop() error {
 	}
 	
 	// Drop all tables
-	var result error
-	for _, table := range tables {
-		query := fmt.Sprintf("DROP TABLE IF EXISTS %s", table)
-		if _, err := d.db.Exec(query); err != nil {
-			result = multierror.Append(result, err)
+	if len(tables) > 0 {
+		for _, table := range tables {
+			query := "DROP TABLE " + table
+			if _, err := d.db.Exec(query); err != nil {
+				return err
+			}
+		}
+		// Vacuum to reclaim space, like the original driver
+		if _, err := d.db.Exec("VACUUM"); err != nil {
+			return err
 		}
 	}
 	
-	return result
-}
-
-// splitSQLStatements splits SQL statements by semicolon, respecting quoted strings
-func splitSQLStatements(sql string) []string {
-	var statements []string
-	var current strings.Builder
-	inString := false
-	var stringChar rune
-	
-	runes := []rune(sql)
-	for i := 0; i < len(runes); i++ {
-		char := runes[i]
-		
-		// Handle string literals
-		if !inString && (char == '\'' || char == '"') {
-			inString = true
-			stringChar = char
-			current.WriteRune(char)
-		} else if inString && char == stringChar {
-			// Check if it's escaped
-			if i+1 < len(runes) && runes[i+1] == stringChar {
-				current.WriteRune(char)
-				current.WriteRune(runes[i+1])
-				i++ // Skip next character
-			} else {
-				inString = false
-				current.WriteRune(char)
-			}
-		} else if !inString && char == ';' {
-			// End of statement
-			if stmt := strings.TrimSpace(current.String()); stmt != "" {
-				statements = append(statements, stmt)
-			}
-			current.Reset()
-		} else {
-			current.WriteRune(char)
-		}
-	}
-	
-	// Add any remaining statement
-	if stmt := strings.TrimSpace(current.String()); stmt != "" {
-		statements = append(statements, stmt)
-	}
-	
-	return statements
+	return nil
 }
