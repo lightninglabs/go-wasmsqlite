@@ -232,6 +232,37 @@ case wasmsqlite.VFSTypeMemory:
 | Firefox | 111+          | ✅ Full      |
 | Safari  | 15.2+         | ✅ Full      |
 
+## Database Migrations with golang-migrate
+
+The example demonstrates using golang-migrate for database schema management:
+
+```go
+import (
+    "embed"
+    "github.com/golang-migrate/migrate/v4"
+    "github.com/golang-migrate/migrate/v4/source/iofs"
+)
+
+//go:embed migrations/*.sql
+var migrationFS embed.FS
+
+func runMigrations(db *sql.DB) error {
+    // Create source from embedded filesystem
+    sourceDriver, _ := iofs.New(migrationFS, "migrations")
+    
+    // Create custom database driver for WASM SQLite
+    dbDriver, _ := NewWASMSQLiteDriver(db)
+    
+    // Create and run migrations
+    m, _ := migrate.NewWithInstance("iofs", sourceDriver, "wasmsqlite", dbDriver)
+    return m.Up()
+}
+```
+
+Migration files follow the naming pattern:
+- `001_initial_schema.up.sql` - Apply migration
+- `001_initial_schema.down.sql` - Rollback migration
+
 ## Development
 
 ### Building from Source

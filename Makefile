@@ -17,7 +17,7 @@ build-wasm:
 # Build example
 build-example: fetch-assets build-wasm
 	@echo "🔨 Building example..."
-	cd example && GOOS=js GOARCH=wasm go build -o main.wasm ./main.go
+	cd example && GOOS=js GOARCH=wasm go build -o main.wasm .
 	cd example && cp $$(go env GOROOT)/lib/wasm/wasm_exec.js .
 	@echo "📦 Copying bridge and assets to example..."
 	cp bridge/sqlite-bridge.js example/

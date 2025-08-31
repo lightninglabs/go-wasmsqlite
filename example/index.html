@@ -92,8 +92,8 @@
         with data persisted in OPFS (Origin Private File System) when available.
     </p>
     <p>
-        <strong>Features demonstrated:</strong> CRUD operations, transactions, database dump/load, 
-        and SQLC-generated code running in the browser.
+        <strong>Features demonstrated:</strong> Database migrations with golang-migrate, CRUD operations, 
+        transactions, database dump/load, and SQL code running in the browser.
     </p>
 
     <div id="status" class="status loading">
@@ -108,6 +108,7 @@
         <button onclick="clearDatabase()">🧹 Clear Database</button>
         <button onclick="exportDatabase()">💾 Dump Database</button>
         <button onclick="importDatabase()">📂 Load Database</button>
+        <button onclick="checkMigrationStatus()">📌 Check Migration Status</button>
     </div>
 
     <div class="container">
@@ -194,7 +195,7 @@ Loading WebAssembly module...</div>
                     btn.disabled = false;
                 });
                 
-                console.log("🎉 wasmsqlite is ready to use!");
+                console.log("🎉 go-sqlite3-wasm with golang-migrate is ready to use!");
             } catch (error) {
                 console.error("❌ Failed to load WebAssembly:", error);
                 status.textContent = "❌ Failed to load WebAssembly: " + error.message;
@@ -362,6 +363,12 @@ Loading WebAssembly module...</div>
                 }
             };
             input.click();
+        }
+        
+        function checkMigrationStatus() {
+            if (!checkReady()) return;
+            console.log("\n🔍 Checking migration status...");
+            getMigrationStatus();
         }
 
         // Disable buttons initially

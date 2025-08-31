@@ -5,13 +5,19 @@ package main
 import (
 	"context"
 	"database/sql"
+	"embed"
 	"fmt"
 	"log"
 	"syscall/js"
 
+	"github.com/golang-migrate/migrate/v4"
+	"github.com/golang-migrate/migrate/v4/source/iofs"
 	wasmsqlite "github.com/sputn1ck/go-sqlite3-wasm"
 	database "github.com/sputn1ck/go-sqlite3-wasm/example/generated"
 )
+
+//go:embed migrations/*.sql
+var migrationFS embed.FS
 
 var (
 	db      *sql.DB
@@ -19,7 +25,7 @@ var (
 )
 
 func main() {
-	fmt.Println("🚀 Starting wasmsqlite demo...")
+	fmt.Println("🚀 Starting go-sqlite3-wasm demo with golang-migrate...")
 
 	// Initialize database connection once
 	var err error
@@ -27,6 +33,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("❌ Failed to open database: %v", err)
 	}
+
+	// Run migrations
+	fmt.Println("🔄 Running database migrations...")
+	if err := runMigrations(db); err != nil {
+		log.Fatalf("❌ Failed to run migrations: %v", err)
+	}
+	fmt.Println("✅ Migrations completed successfully!")
 
 	queries = database.New(db)
 	fmt.Println("✅ Database initialized!")
@@ -43,6 +56,7 @@ func main() {
 	js.Global().Set("clearDatabase", js.FuncOf(clearDatabaseJS))
 	js.Global().Set("dumpDatabase", js.FuncOf(dumpDatabaseJS))
 	js.Global().Set("loadDatabase", js.FuncOf(loadDatabaseJS))
+	js.Global().Set("getMigrationStatus", js.FuncOf(getMigrationStatusJS))
 
 	fmt.Println("✅ Demo functions are ready!")
 	fmt.Println("📖 Available functions:")
@@ -57,6 +71,7 @@ func main() {
 	fmt.Println("  - clearDatabase(): Clear all data from the database")
 	fmt.Println("  - dumpDatabase(): Export database as SQL dump (saved to window.lastDatabaseDump)")
 	fmt.Println("  - loadDatabase(dump): Import SQL dump to restore database")
+	fmt.Println("  - getMigrationStatus(): Get current migration version and status")
 
 	// Keep the program running
 	select {}
@@ -69,32 +84,86 @@ func openDB() (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Create tables
-	schema := `
-	CREATE TABLE IF NOT EXISTS users (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		username TEXT NOT NULL UNIQUE,
-		email TEXT NOT NULL,
-		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-	);
+	return db, nil
+}
 
-	CREATE TABLE IF NOT EXISTS posts (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		user_id INTEGER NOT NULL,
-		title TEXT NOT NULL,
-		content TEXT,
-		published BOOLEAN DEFAULT FALSE,
-		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		FOREIGN KEY (user_id) REFERENCES users(id)
-	);
-	`
-
-	if _, err := db.ExecContext(context.Background(), schema); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to create schema: %w", err)
+func runMigrations(db *sql.DB) error {
+	// Create source from embedded filesystem
+	sourceDriver, err := iofs.New(migrationFS, "migrations")
+	if err != nil {
+		return fmt.Errorf("failed to create migration source: %w", err)
 	}
 
-	return db, nil
+	// Create custom database driver for WASM SQLite
+	dbDriver, err := NewWASMSQLiteDriver(db)
+	if err != nil {
+		return fmt.Errorf("failed to create database driver: %w", err)
+	}
+
+	// Create migrate instance
+	m, err := migrate.NewWithInstance("iofs", sourceDriver, "wasmsqlite", dbDriver)
+	if err != nil {
+		return fmt.Errorf("failed to create migrate instance: %w", err)
+	}
+
+	// Get current version
+	version, dirty, err := dbDriver.Version()
+	if err != nil && err != migrate.ErrNilVersion {
+		return fmt.Errorf("failed to get current version: %w", err)
+	}
+
+	if dirty {
+		fmt.Println("⚠️  Database is in dirty state, attempting to repair...")
+		// Force set to the current version to clear dirty state
+		if err := dbDriver.SetVersion(version, false); err != nil {
+			return fmt.Errorf("failed to clear dirty state: %w", err)
+		}
+	}
+
+	fmt.Printf("📌 Current migration version: %d\n", version)
+
+	// Run migrations up to latest version
+	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+		return fmt.Errorf("failed to run migrations: %w", err)
+	}
+
+	if err == migrate.ErrNoChange {
+		fmt.Println("✅ Database is already up to date")
+	} else {
+		// Get new version
+		newVersion, _, _ := dbDriver.Version()
+		fmt.Printf("✅ Migrated to version: %d\n", newVersion)
+	}
+
+	return nil
+}
+
+func getMigrationStatusJS(this js.Value, p []js.Value) interface{} {
+	go func() {
+		driver, err := NewWASMSQLiteDriver(db)
+		if err != nil {
+			log.Printf("❌ Failed to create driver: %v", err)
+			return
+		}
+
+		version, dirty, err := driver.Version()
+		if err != nil {
+			log.Printf("❌ Failed to get migration status: %v", err)
+			return
+		}
+
+		if version == -1 {
+			fmt.Println("📌 Migration Status: No migrations applied yet")
+		} else {
+			status := "clean"
+			if dirty {
+				status = "dirty"
+			}
+			fmt.Printf("📌 Migration Status: Version %d (%s)\n", version, status)
+		}
+	}()
+
+	return nil
 }
 
 func runDemo(this js.Value, p []js.Value) interface{} {
