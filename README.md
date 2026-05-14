@@ -85,6 +85,20 @@ db, err := wasmsqlite.Open(&wasmsqlite.Options{
 
 Direct `sql.Open(...)` callers should call `db.SetMaxOpenConns(1)` for each OPFS database. The worker rejects duplicate opens of the same OPFS filename in one worker, and multiple concurrent database handles are not useful for this browser storage model.
 
+Named SQLite parameters are supported through `sql.Named`:
+
+```go
+_, err := db.Exec(
+    `INSERT INTO notes(id, body) VALUES (:id, $body)`,
+    sql.Named("id", 1),
+    sql.Named("body", "hello"),
+)
+```
+
+Do not mix positional and named parameters in one call.
+
+`ExecContext`, `QueryContext`, `BeginTx`, `Ping`, dump, and load respect context cancellation while waiting for the JavaScript bridge. Canceling a Go context stops waiting on the Go side; it does not forcibly interrupt a SQLite operation that has already been posted to the Worker.
+
 ## DSN Options
 
 - `file`: database filename, default `/app.db`
@@ -168,6 +182,44 @@ app := wasmsqlite.WithCrossOriginIsolation(http.FileServer(http.Dir("./public"))
 http.Handle("/", app)
 ```
 
+## Production Serving
+
+A production deployment should serve one flat runtime directory:
+
+```text
+public/
+  index.html
+  main.wasm
+  wasm_exec.js
+  sqlite-bridge.js
+  sqlite-worker.js
+  sqlite3.js
+  sqlite3.wasm
+  sqlite3-opfs-async-proxy.js
+```
+
+Minimal Go static server:
+
+```go
+package main
+
+import (
+    "log"
+    "net/http"
+
+    "github.com/sputn1ck/go-wasmsqlite"
+)
+
+func main() {
+    app := http.FileServer(http.Dir("./public"))
+    handler := wasmsqlite.WithCrossOriginIsolation(app)
+
+    log.Fatal(http.ListenAndServe(":8080", handler))
+}
+```
+
+`WithCrossOriginIsolation` sets COOP/COEP on every response and `application/wasm` for `.wasm` files. Static hosts must do the same for the app page. For caching, prefer hash-named immutable files; otherwise deploy `main.wasm`, `sqlite-bridge.js`, `sqlite-worker.js`, `sqlite3.js`, `sqlite3.wasm`, and `sqlite3-opfs-async-proxy.js` together. The bridge and worker include a small protocol check so mismatched runtime files fail clearly instead of producing opaque worker errors.
+
 ### Access Individual Assets
 
 ```go
@@ -237,6 +289,14 @@ case wasmsqlite.VFSTypeMemory:
 
 Use `RequirePersistent: true` or `require_persistent=true` when falling back to memory would be incorrect.
 
+## Storage Behavior
+
+- One `*sql.DB` should own a given OPFS filename in a page. Use `SetMaxOpenConns(1)`.
+- Opening the same OPFS filename twice in the same Worker returns `ErrDuplicateOpen`.
+- Opening the same OPFS filename from two tabs uses separate Workers and browser OPFS locking. Browser behavior can differ; apps should handle either a successful second open or an actionable lock/open error.
+- Private/incognito modes may expose reduced or temporary OPFS storage. Use `RequirePersistent` when data loss would be unacceptable.
+- Default `vfs=opfs` remains friendly for demos: if OPFS is unavailable, it falls back to `memory` and reports `VFSTypeMemory`.
+
 ## Migrations
 
 The package includes a `golang-migrate` database driver that runs migrations against an existing `*sql.DB`:
@@ -267,14 +327,14 @@ make setup          # Fetch SQLite WASM assets
 make build          # Fetch assets, build root WASM, and build example
 make build-example  # Build only the demo app and copy browser runtime files
 make serve          # Serve demo at http://localhost:8081
-make test           # Run normal Go tests; browser tests are opt-in
+make test           # Run normal Go tests
 make browser-test   # Run headless Chrome browser E2E tests
 make clean          # Remove build artifacts
 ```
 
 `make fetch-assets` reads the official SQLite download metadata and fetches the current `sqlite-wasm-*.zip` bundle with SHA3 verification. To pin a specific archive, pass `SQLITE_URL` and `EXPECTED_SHA`; `SQLITE_VERSION=3530100 make fetch-assets` selects that version when it is still listed on the download page.
 
-Browser tests build a WASM test binary, serve the SQLite assets with the required headers, launch headless Chrome, and verify OPFS persistence, BLOBs, dump/load, transactions, memory mode, migrations, and the static Pages-style example path.
+Browser tests build a WASM test binary, serve the SQLite assets with the required headers, launch headless Chrome, and verify OPFS persistence, BLOBs, dump/load, transactions, memory mode, migrations, generated SQL shapes, cancellation, named parameters, browser-context storage behavior, and the static Pages-style example path. CI runs these browser tests on every push and pull request.
 
 ## GitHub Pages
 
@@ -298,6 +358,33 @@ The Pages workflow runs `make build-example` and publishes `./example`. The publ
 - OPFS storage is origin-scoped.
 - OPFS requires HTTPS or localhost.
 - If OPFS is unavailable, `vfs=opfs` falls back to in-memory storage.
+- Context cancellation stops waiting on the Go side but does not interrupt already-running SQLite work in the Worker.
+- Named and positional parameters cannot be mixed in the same call.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+| --- | --- | --- |
+| `ErrBridgeNotLoaded` | `sqlite-bridge.js` was not loaded before `main.wasm` | Load `sqlite-bridge.js` before starting Go WASM. |
+| `ErrAssetUnavailable` | Worker cannot fetch `sqlite3.js`, `sqlite3.wasm`, or the OPFS proxy | Serve the flat runtime files together or set `worker_url` and `sqlite_js_url`. |
+| `ErrPersistentRequired` | `RequirePersistent` was set but OPFS/persistent storage is unavailable | Show a user-facing persistence error or run without `RequirePersistent` for demo mode. |
+| `ErrDuplicateOpen` | Same OPFS filename opened twice in one Worker | Use one `*sql.DB` per OPFS file and `SetMaxOpenConns(1)`. |
+| `ErrUnsupportedVFS` | Requested VFS is not available in the browser build | Use `opfs`, `opfs-sahpool`, or `memory`. |
+| `ErrNamedParameter` | Mixed positional/named params, missing named param, or unused named param | Use all positional or all named params and match SQL names. |
+| `ErrProtocolMismatch` | Cached runtime JS files are from different versions | Redeploy `sqlite-bridge.js`, `sqlite-worker.js`, SQLite assets, and `main.wasm` together. |
+
+## Compatibility
+
+| Component | Current support |
+| --- | --- |
+| Go | 1.24+ |
+| SQLite WASM | Official `sqlite-wasm` bundle, currently 3.53.1 / 3530100 |
+| Browser | Modern Chromium-class browsers with WebAssembly; OPFS requires secure context and cross-origin isolation |
+| VFS modes | `opfs`, `opfs-sahpool`, `memory` |
+| SQL API | Go `database/sql`, positional and named parameters, transactions, BLOBs, `parse_time`, dump/load |
+| Unsupported | Dynamic SQLite extensions, forced interruption of already-running Worker SQL |
+
+Releases should follow semantic versioning. Runtime JS/WASM files are part of the compatibility contract and should be deployed with the matching Go module version.
 
 ## License
 
