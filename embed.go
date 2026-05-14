@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Embed all assets and bridge files
@@ -14,10 +15,18 @@ import (
 //go:embed assets/* bridge/sqlite-bridge.js bridge/sqlite-worker.js
 var embeddedAssets embed.FS
 
+var runtimeAssetPaths = map[string]string{
+	"sqlite3.wasm":                "assets/sqlite3.wasm",
+	"sqlite3.js":                  "assets/sqlite3.js",
+	"sqlite3-opfs-async-proxy.js": "assets/sqlite3-opfs-async-proxy.js",
+	"sqlite-bridge.js":            "bridge/sqlite-bridge.js",
+	"sqlite-worker.js":            "bridge/sqlite-worker.js",
+}
+
 // ExtractAssets extracts all embedded SQLite WASM assets to the specified
-// directory. The runtime files are assets/sqlite3.js, assets/sqlite3.wasm,
-// assets/sqlite3-opfs-async-proxy.js, bridge/sqlite-bridge.js, and
-// bridge/sqlite-worker.js.
+// directory using the flat layout expected by the browser runtime:
+// sqlite3.js, sqlite3.wasm, sqlite3-opfs-async-proxy.js, sqlite-bridge.js, and
+// sqlite-worker.js.
 //
 // Example:
 //
@@ -26,40 +35,33 @@ var embeddedAssets embed.FS
 //	    log.Fatal(err)
 //	}
 func ExtractAssets(destDir string) error {
-	return fs.WalkDir(embeddedAssets, ".", func(path string, d fs.DirEntry, err error) error {
+	for filename, embeddedPath := range runtimeAssetPaths {
+		data, err := embeddedAssets.ReadFile(embeddedPath)
 		if err != nil {
-			return err
+			return fmt.Errorf("reading embedded file %s: %w", embeddedPath, err)
 		}
 
-		if d.IsDir() {
-			return nil
-		}
+		destPath := filepath.Join(destDir, filename)
 
-		// Read embedded file
-		data, err := embeddedAssets.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("reading embedded file %s: %w", path, err)
-		}
-
-		// Create destination path
-		destPath := filepath.Join(destDir, path)
-
-		// Create parent directories
 		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
 			return fmt.Errorf("creating directory for %s: %w", destPath, err)
 		}
 
-		// Write file
 		if err := os.WriteFile(destPath, data, 0644); err != nil {
 			return fmt.Errorf("writing file %s: %w", destPath, err)
 		}
+	}
 
-		return nil
-	})
+	return nil
 }
 
-// AssetHandler returns an http.Handler that serves the embedded assets.
-// The handler automatically sets appropriate CORS headers for OPFS support.
+// AssetHandler returns an http.Handler that serves the embedded runtime assets
+// from flat paths such as /sqlite3.js and /sqlite-worker.js. It also preserves
+// access to the embedded paths under /assets/ and /bridge/ for compatibility.
+//
+// The handler sets cross-origin isolation headers on asset responses. The app
+// page itself must also be served with these headers for OPFS to work; use
+// WithCrossOriginIsolation to wrap the whole app handler.
 //
 // Example:
 //
@@ -69,17 +71,40 @@ func AssetHandler() http.Handler {
 	fileServer := http.FileServer(http.FS(embeddedAssets))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Set CORS headers for OPFS support
-		w.Header().Set("Cross-Origin-Embedder-Policy", "require-corp")
-		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		setCrossOriginIsolationHeaders(w)
+		path := strings.TrimPrefix(r.URL.Path, "/")
+		if embeddedPath, ok := runtimeAssetPaths[path]; ok {
+			if filepath.Ext(path) == ".wasm" {
+				w.Header().Set("Content-Type", "application/wasm")
+			}
+			http.ServeFileFS(w, r, embeddedAssets, embeddedPath)
+			return
+		}
 
-		// Set appropriate content types
-		if filepath.Ext(r.URL.Path) == ".wasm" {
+		if filepath.Ext(path) == ".wasm" {
 			w.Header().Set("Content-Type", "application/wasm")
 		}
 
 		fileServer.ServeHTTP(w, r)
 	})
+}
+
+// WithCrossOriginIsolation wraps a handler and sets the headers required by
+// SharedArrayBuffer-backed OPFS. Wrap the app page handler with this, not only
+// the static SQLite asset handler.
+func WithCrossOriginIsolation(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		setCrossOriginIsolationHeaders(w)
+		if filepath.Ext(r.URL.Path) == ".wasm" {
+			w.Header().Set("Content-Type", "application/wasm")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func setCrossOriginIsolationHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cross-Origin-Embedder-Policy", "require-corp")
+	w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
 }
 
 // GetAsset returns the contents of a specific embedded asset.

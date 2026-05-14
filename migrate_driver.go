@@ -4,11 +4,13 @@ package wasmsqlite
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
+	"strings"
+	"sync/atomic"
 
 	"github.com/golang-migrate/migrate/v4/database"
-	"github.com/hashicorp/go-multierror"
 )
 
 // MigrateDriver implements the database.Driver interface for golang-migrate.
@@ -17,11 +19,12 @@ import (
 // This driver is based on the official golang-migrate sqlite3 driver but adapted
 // for WASM constraints:
 // - No file-based operations (uses existing *sql.DB connection)
-// - No locking needed (WASM is single-threaded)
+// - Process-local locking to match golang-migrate's driver contract
 // - Simplified configuration (no x-migrations-table or x-no-tx-wrap options)
 // - Always uses transactions for safety
 type MigrateDriver struct {
-	db *sql.DB
+	db       *sql.DB
+	isLocked atomic.Bool
 }
 
 // NewMigrateDriver creates a new migrate driver for WASM SQLite.
@@ -49,8 +52,10 @@ func (d *MigrateDriver) ensureVersionTable() error {
 	CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER, dirty BOOLEAN);
 	CREATE UNIQUE INDEX IF NOT EXISTS version_unique ON schema_migrations (version);
 	`
-	_, err := d.db.Exec(query)
-	return err
+	if _, err := d.db.Exec(query); err != nil {
+		return &database.Error{OrigErr: err, Query: []byte(query)}
+	}
+	return nil
 }
 
 // Open returns the underlying database connection.
@@ -65,14 +70,19 @@ func (d *MigrateDriver) Close() error {
 	return nil
 }
 
-// Lock acquires a lock (no-op for SQLite in WASM)
+// Lock acquires a process-local migration lock.
 func (d *MigrateDriver) Lock() error {
-	// SQLite has built-in locking, no need for additional locking in WASM context
+	if !d.isLocked.CompareAndSwap(false, true) {
+		return database.ErrLocked
+	}
 	return nil
 }
 
-// Unlock releases the lock (no-op for SQLite in WASM)
+// Unlock releases the process-local migration lock.
 func (d *MigrateDriver) Unlock() error {
+	if !d.isLocked.CompareAndSwap(true, false) {
+		return database.ErrNotLocked
+	}
 	return nil
 }
 
@@ -88,20 +98,20 @@ func (d *MigrateDriver) Run(migration io.Reader) error {
 	// Execute migration in a transaction
 	tx, err := d.db.Begin()
 	if err != nil {
-		return fmt.Errorf("transaction start failed: %w", err)
+		return &database.Error{OrigErr: err, Err: "transaction start failed"}
 	}
 
 	// SQLite can handle multiple statements in a single Exec call
 	// when they're separated by semicolons, similar to the original driver
 	if _, err := tx.Exec(query); err != nil {
 		if errRollback := tx.Rollback(); errRollback != nil {
-			err = multierror.Append(err, errRollback)
+			err = errors.Join(err, errRollback)
 		}
-		return fmt.Errorf("migration failed: %w", err)
+		return &database.Error{OrigErr: err, Query: []byte(query)}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("transaction commit failed: %w", err)
+		return &database.Error{OrigErr: err, Err: "transaction commit failed"}
 	}
 
 	return nil
@@ -111,13 +121,15 @@ func (d *MigrateDriver) Run(migration io.Reader) error {
 func (d *MigrateDriver) SetVersion(version int, dirty bool) error {
 	tx, err := d.db.Begin()
 	if err != nil {
-		return fmt.Errorf("transaction start failed: %w", err)
+		return &database.Error{OrigErr: err, Err: "transaction start failed"}
 	}
 
 	query := `DELETE FROM schema_migrations`
 	if _, err := tx.Exec(query); err != nil {
-		tx.Rollback()
-		return err
+		if errRollback := tx.Rollback(); errRollback != nil {
+			err = errors.Join(err, errRollback)
+		}
+		return &database.Error{OrigErr: err, Query: []byte(query)}
 	}
 
 	// Also re-write the schema version for nil dirty versions to prevent
@@ -127,14 +139,14 @@ func (d *MigrateDriver) SetVersion(version int, dirty bool) error {
 		query = `INSERT INTO schema_migrations (version, dirty) VALUES (?, ?)`
 		if _, err := tx.Exec(query, version, dirty); err != nil {
 			if errRollback := tx.Rollback(); errRollback != nil {
-				err = multierror.Append(err, errRollback)
+				err = errors.Join(err, errRollback)
 			}
-			return err
+			return &database.Error{OrigErr: err, Query: []byte(query)}
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("transaction commit failed: %w", err)
+		return &database.Error{OrigErr: err, Err: "transaction commit failed"}
 	}
 
 	return nil
@@ -149,17 +161,20 @@ func (d *MigrateDriver) Version() (version int, dirty bool, err error) {
 	if err == sql.ErrNoRows {
 		return database.NilVersion, false, nil
 	}
+	if err != nil {
+		return database.NilVersion, false, &database.Error{OrigErr: err, Query: []byte(query)}
+	}
 
-	return version, dirty, err
+	return version, dirty, nil
 }
 
 // Drop drops all tables
 func (d *MigrateDriver) Drop() error {
 	// Get all table names
-	query := `SELECT name FROM sqlite_master WHERE type = 'table'`
+	query := `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`
 	rows, err := d.db.Query(query)
 	if err != nil {
-		return err
+		return &database.Error{OrigErr: err, Query: []byte(query)}
 	}
 	defer rows.Close()
 
@@ -167,28 +182,32 @@ func (d *MigrateDriver) Drop() error {
 	for rows.Next() {
 		var table string
 		if err := rows.Scan(&table); err != nil {
-			return err
+			return &database.Error{OrigErr: err, Query: []byte(query)}
 		}
 		tables = append(tables, table)
 	}
 
 	if err := rows.Err(); err != nil {
-		return err
+		return &database.Error{OrigErr: err, Query: []byte(query)}
 	}
 
 	// Drop all tables
 	if len(tables) > 0 {
 		for _, table := range tables {
-			query := "DROP TABLE " + table
+			query := `DROP TABLE "` + escapeIdentifier(table) + `"`
 			if _, err := d.db.Exec(query); err != nil {
-				return err
+				return &database.Error{OrigErr: err, Query: []byte(query)}
 			}
 		}
 		// Vacuum to reclaim space, like the original driver
 		if _, err := d.db.Exec("VACUUM"); err != nil {
-			return err
+			return &database.Error{OrigErr: err, Query: []byte("VACUUM")}
 		}
 	}
 
 	return nil
+}
+
+func escapeIdentifier(name string) string {
+	return strings.ReplaceAll(name, `"`, `""`)
 }

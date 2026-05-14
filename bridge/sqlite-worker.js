@@ -4,6 +4,7 @@ let sqlite3;
 let nextDbId = 1;
 const dbs = new Map();
 const openOPFSFiles = new Map();
+let sqliteJSURL = "sqlite3.js";
 
 function normalizeError(error) {
   if (!error) return "unknown sqlite worker error";
@@ -20,10 +21,11 @@ function hasVFS(name) {
   return !!sqlite3.capi.sqlite3_vfs_find(name);
 }
 
-async function ensureSQLite() {
+async function ensureSQLite(options = {}) {
   if (sqlite3) return sqlite3;
 
-  importScripts("sqlite3.js");
+  sqliteJSURL = options.sqliteJSURL || sqliteJSURL;
+  importScripts(sqliteJSURL);
   sqlite3 = await sqlite3InitModule();
 
   if (sqlite3.installOpfsSAHPoolVfs && !hasVFS("opfs-sahpool")) {
@@ -91,6 +93,9 @@ function sqlLiteral(value) {
 }
 
 function normalizeValue(value) {
+  if (value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, "__wasmSqliteInt64")) {
+    return BigInt(value.__wasmSqliteInt64);
+  }
   if (typeof value === "bigint") {
     const asNumber = Number(value);
     if (Number.isSafeInteger(asNumber)) return asNumber;
@@ -139,8 +144,8 @@ function runExec(db, sql, params) {
   };
 }
 
-async function init() {
-  await ensureSQLite();
+async function init(args = {}) {
+  await ensureSQLite(args);
   return { version: sqlite3.version, vfsList: vfsList() };
 }
 
@@ -157,6 +162,9 @@ async function open(args) {
   if (args.cache) uriParams.cache = args.cache;
 
   if (filename === ":memory:" || requestedVFS === "memory") {
+    if (args.requirePersistent) {
+      throw new Error("persistent storage required but memory VFS was requested");
+    }
     filename = ":memory:";
     vfs = "memory";
     db = new sqlite3.oo1.DB(filename, openFlags(args.mode));
@@ -175,6 +183,9 @@ async function open(args) {
       openOPFSFiles.set(duplicateKey, true);
       db.__opfsKey = duplicateKey;
     } else {
+      if (args.requirePersistent) {
+        throw new Error("persistent OPFS storage required but OPFS VFS is unavailable");
+      }
       sqlite3.config.warn("OPFS VFS unavailable, falling back to :memory:");
       filename = ":memory:";
       vfs = "memory";
@@ -203,6 +214,12 @@ async function open(args) {
       openOPFSFiles.set(duplicateKey, true);
       db.__opfsKey = duplicateKey;
     }
+  }
+
+  if (args.requirePersistent && !persistent) {
+    if (db.__opfsKey) openOPFSFiles.delete(db.__opfsKey);
+    db.close();
+    throw new Error(`persistent storage required but resolved VFS is ${vfs}`);
   }
 
   if (args.busyTimeout > 0) {

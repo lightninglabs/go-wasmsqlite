@@ -3,6 +3,8 @@
 package wasmsqlite
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -85,12 +87,13 @@ func TestExtractAssets(t *testing.T) {
 		t.Fatalf("Failed to extract assets: %v", err)
 	}
 
-	// Verify files exist
+	// Verify files exist in the flat runtime layout expected by the JS bridge.
 	expectedFiles := []string{
-		"assets/sqlite3.wasm",
-		"assets/sqlite3.js",
-		"bridge/sqlite-bridge.js",
-		"bridge/sqlite-worker.js",
+		"sqlite3.wasm",
+		"sqlite3.js",
+		"sqlite3-opfs-async-proxy.js",
+		"sqlite-bridge.js",
+		"sqlite-worker.js",
 	}
 
 	for _, file := range expectedFiles {
@@ -98,5 +101,26 @@ func TestExtractAssets(t *testing.T) {
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			t.Errorf("Expected file not extracted: %s", file)
 		}
+	}
+}
+
+func TestAssetHandlerServesFlatRuntimePaths(t *testing.T) {
+	server := httptest.NewServer(AssetHandler())
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/sqlite3.js")
+	if err != nil {
+		t.Fatalf("get sqlite3.js: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Cross-Origin-Opener-Policy"); got != "same-origin" {
+		t.Fatalf("unexpected COOP header: %q", got)
+	}
+	if got := resp.Header.Get("Cross-Origin-Embedder-Policy"); got != "require-corp" {
+		t.Fatalf("unexpected COEP header: %q", got)
 	}
 }

@@ -12,9 +12,10 @@ import (
 
 // Rows implements the database/sql/driver.Rows interface
 type Rows struct {
-	columns []string
-	rows    [][]interface{}
-	pos     int
+	columns   []string
+	rows      [][]interface{}
+	pos       int
+	parseTime bool
 }
 
 // Columns implements driver.Rows
@@ -49,7 +50,7 @@ func (r *Rows) Next(dest []driver.Value) error {
 
 	// Copy values from row to dest
 	for i := 0; i < len(dest) && i < len(row); i++ {
-		dest[i] = convertInterfaceToDriverValue(row[i])
+		dest[i] = convertInterfaceToDriverValue(row[i], r.parseTime)
 	}
 
 	// Fill remaining dest slots with nil if row is shorter
@@ -156,17 +157,15 @@ func (r *Rows) ColumnTypePrecisionScale(index int) (precision, scale int64, ok b
 }
 
 // convertInterfaceToDriverValue converts an interface{} value to a driver.Value
-func convertInterfaceToDriverValue(value interface{}) driver.Value {
+func convertInterfaceToDriverValue(value interface{}, parseTime bool) driver.Value {
 	if value == nil {
 		return nil
 	}
 
 	switch v := value.(type) {
 	case string:
-		// Check if this looks like a timestamp and try to parse it
-		// SQLite returns timestamps as strings in the format "YYYY-MM-DD HH:MM:SS"
-		if len(v) == 19 && v[4] == '-' && v[7] == '-' && v[10] == ' ' && v[13] == ':' && v[16] == ':' {
-			if t, err := time.Parse("2006-01-02 15:04:05", v); err == nil {
+		if parseTime {
+			if t, err := parseSQLiteTime(v); err == nil {
 				return t
 			}
 		}
@@ -191,4 +190,28 @@ func convertInterfaceToDriverValue(value interface{}) driver.Value {
 		// Convert unknown types to string
 		return fmt.Sprintf("%v", v)
 	}
+}
+
+func parseSQLiteTime(value string) (time.Time, error) {
+	formats := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05.999999999-07:00",
+		"2006-01-02 15:04:05.999999999Z07:00",
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04:05-07:00",
+		"2006-01-02 15:04:05Z07:00",
+		"2006-01-02 15:04:05",
+		"2006-01-02",
+	}
+
+	var lastErr error
+	for _, format := range formats {
+		t, err := time.Parse(format, value)
+		if err == nil {
+			return t, nil
+		}
+		lastErr = err
+	}
+	return time.Time{}, lastErr
 }

@@ -57,9 +57,10 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	}
 
 	conn := &Conn{
-		bridge:  bridge,
-		adapter: adapter,
-		vfsType: vfsType,
+		bridge:    bridge,
+		adapter:   adapter,
+		vfsType:   vfsType,
+		parseTime: opts.ParseTime,
 	}
 
 	return conn, nil
@@ -72,10 +73,11 @@ func (c *Connector) Driver() driver.Driver {
 
 // Conn implements the database/sql/driver.Conn interface
 type Conn struct {
-	bridge  js.Value
-	adapter *BridgeAdapter
-	inTx    bool
-	vfsType string
+	bridge    js.Value
+	adapter   *BridgeAdapter
+	inTx      bool
+	vfsType   string
+	parseTime bool
 }
 
 // Prepare implements driver.Conn
@@ -171,9 +173,10 @@ func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 	}
 
 	return &Rows{
-		columns: columns,
-		rows:    rows,
-		pos:     0,
+		columns:   columns,
+		rows:      rows,
+		pos:       0,
+		parseTime: c.parseTime,
 	}, nil
 }
 

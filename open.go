@@ -24,11 +24,18 @@ type Options struct {
 	// Busy timeout in milliseconds (default: 5000)
 	BusyTimeout int
 
-	// Custom sqlite-worker.js URL. Empty uses "sqlite-worker.js" next to
-	// sqlite-bridge.js.
+	// Custom sqlite-worker.js URL. Empty uses "sqlite-worker.js" relative to
+	// the app page.
 	WorkerURL string
 
-	// Whether to parse time strings as time.Time (default: false)
+	// Custom sqlite3.js URL used by sqlite-worker.js. Empty uses "sqlite3.js"
+	// relative to sqlite-worker.js.
+	SQLiteJSURL string
+
+	// Require OPFS/persistent storage instead of falling back to memory.
+	RequirePersistent bool
+
+	// Whether to parse time strings as time.Time (default: false).
 	ParseTime bool
 
 	// Journal mode (default: not set, uses SQLite default)
@@ -52,6 +59,7 @@ func DefaultOptions() *Options {
 		BusyTimeout: 5000,
 		ParseTime:   false,
 		WorkerURL:   "",
+		SQLiteJSURL: "",
 	}
 }
 
@@ -90,6 +98,14 @@ func buildDSN(opts *Options) string {
 
 	if opts.WorkerURL != "" {
 		values.Set("worker_url", opts.WorkerURL)
+	}
+
+	if opts.SQLiteJSURL != "" {
+		values.Set("sqlite_js_url", opts.SQLiteJSURL)
+	}
+
+	if opts.RequirePersistent {
+		values.Set("require_persistent", "true")
 	}
 
 	if opts.ParseTime {
@@ -164,6 +180,14 @@ func parseDSN(dsn string) (*Options, error) {
 		opts.WorkerURL = workerURL
 	}
 
+	if sqliteJSURL := values.Get("sqlite_js_url"); sqliteJSURL != "" {
+		opts.SQLiteJSURL = sqliteJSURL
+	}
+
+	if requirePersistent := values.Get("require_persistent"); requirePersistent == "true" {
+		opts.RequirePersistent = true
+	}
+
 	if parseTime := values.Get("parse_time"); parseTime == "true" {
 		opts.ParseTime = true
 	}
@@ -196,7 +220,7 @@ func createWorker(opts *Options) (js.Value, error) {
 	}
 
 	// Initialize SQLite WASM through the bridge
-	if err := initializeSQLiteBridge(bridge, opts.WorkerURL); err != nil {
+	if err := initializeSQLiteBridge(bridge, opts); err != nil {
 		return js.Null(), fmt.Errorf("failed to initialize SQLite bridge: %w", err)
 	}
 
@@ -204,7 +228,7 @@ func createWorker(opts *Options) (js.Value, error) {
 }
 
 // initializeSQLiteBridge initializes the SQLite bridge
-func initializeSQLiteBridge(bridge js.Value, workerURL string) error {
+func initializeSQLiteBridge(bridge js.Value, opts *Options) error {
 	initMethod := bridge.Get("init")
 	if initMethod.IsUndefined() {
 		return fmt.Errorf("sqliteBridge.init method not found")
@@ -214,9 +238,14 @@ func initializeSQLiteBridge(bridge js.Value, workerURL string) error {
 	defer cancel()
 
 	args := []interface{}{}
-	if workerURL != "" {
+	if opts.WorkerURL != "" || opts.SQLiteJSURL != "" {
 		options := js.Global().Get("Object").New()
-		options.Set("workerURL", workerURL)
+		if opts.WorkerURL != "" {
+			options.Set("workerURL", opts.WorkerURL)
+		}
+		if opts.SQLiteJSURL != "" {
+			options.Set("sqliteJSURL", opts.SQLiteJSURL)
+		}
 		args = append(args, options)
 	}
 

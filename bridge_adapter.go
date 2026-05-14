@@ -46,6 +46,7 @@ func (b *BridgeAdapter) Open(opts *Options) (string, error) {
 	jsOpts.Set("mode", opts.Mode)
 	jsOpts.Set("cache", opts.Cache)
 	jsOpts.Set("journalMode", opts.JournalMode)
+	jsOpts.Set("requirePersistent", opts.RequirePersistent)
 
 	pragmas := js.Global().Get("Array").New(len(opts.Pragma))
 	for i, pragma := range opts.Pragma {
@@ -401,30 +402,38 @@ func (b *BridgeAdapter) toJSValue(v interface{}) js.Value {
 	switch val := v.(type) {
 	case nil:
 		return js.Null()
-	case bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64,
-		float32, float64, string:
+	case bool, int, int8, int16, int32, uint, uint8, uint16, uint32, float32, float64, string:
 		// These types are handled directly by js.ValueOf
 		return js.ValueOf(val)
+	case int64:
+		return int64ToJSValue(val)
+	case uint64:
+		if val <= uint64(1<<63-1) {
+			return int64ToJSValue(int64(val))
+		}
+		return js.ValueOf(fmt.Sprintf("%d", val))
 	case []byte:
 		// Convert byte slice to Uint8Array
-		if val == nil || len(val) == 0 {
+		if val == nil {
 			return js.Null()
 		}
 		uint8Array := js.Global().Get("Uint8Array").New(len(val))
-		js.CopyBytesToJS(uint8Array, val)
+		if len(val) > 0 {
+			js.CopyBytesToJS(uint8Array, val)
+		}
 		return uint8Array
 	case time.Time:
 		// Convert time to ISO string
 		if val.IsZero() {
 			return js.Null()
 		}
-		return js.ValueOf(val.Format(time.RFC3339))
+		return js.ValueOf(val.Format(time.RFC3339Nano))
 	case *time.Time:
 		// Handle pointer to time
 		if val == nil || val.IsZero() {
 			return js.Null()
 		}
-		return js.ValueOf(val.Format(time.RFC3339))
+		return js.ValueOf(val.Format(time.RFC3339Nano))
 	case sql.NullString:
 		if val.Valid {
 			return js.ValueOf(val.String)
@@ -437,7 +446,7 @@ func (b *BridgeAdapter) toJSValue(v interface{}) js.Value {
 		return js.Null()
 	case sql.NullInt64:
 		if val.Valid {
-			return js.ValueOf(val.Int64)
+			return int64ToJSValue(val.Int64)
 		}
 		return js.Null()
 	case sql.NullFloat64:
@@ -447,7 +456,7 @@ func (b *BridgeAdapter) toJSValue(v interface{}) js.Value {
 		return js.Null()
 	case sql.NullTime:
 		if val.Valid {
-			return js.ValueOf(val.Time.Format(time.RFC3339))
+			return js.ValueOf(val.Time.Format(time.RFC3339Nano))
 		}
 		return js.Null()
 	default:
@@ -459,4 +468,17 @@ func (b *BridgeAdapter) toJSValue(v interface{}) js.Value {
 		// Use fmt.Sprint as a fallback
 		return js.ValueOf(fmt.Sprintf("%v", val))
 	}
+}
+
+func int64ToJSValue(val int64) js.Value {
+	const maxSafeInteger = int64(1<<53 - 1)
+	const minSafeInteger = -maxSafeInteger
+
+	if val >= minSafeInteger && val <= maxSafeInteger {
+		return js.ValueOf(val)
+	}
+
+	obj := js.Global().Get("Object").New()
+	obj.Set("__wasmSqliteInt64", fmt.Sprintf("%d", val))
+	return obj
 }

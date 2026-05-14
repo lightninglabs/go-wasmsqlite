@@ -5,10 +5,12 @@
   let nextRequestId = 1;
   let initPromise = null;
   const pending = new Map();
+  const bridgeScriptURL = globalThis.document?.currentScript?.src || "";
 
   function workerURL(override) {
     if (override) return override;
     if (globalThis.sqliteBridgeWorkerURL) return globalThis.sqliteBridgeWorkerURL;
+    if (bridgeScriptURL) return new URL("sqlite-worker.js", bridgeScriptURL).href;
     return "sqlite-worker.js";
   }
 
@@ -50,7 +52,7 @@
     async init(options = {}) {
       ensureWorker(options.workerURL);
       if (!initPromise) {
-        initPromise = request("init").then((result) => {
+        initPromise = request("init", { sqliteJSURL: options.sqliteJSURL || globalThis.sqliteBridgeSQLiteJSURL || "" }).then((result) => {
           console.log("SQLite oo1 worker initialized:", result.version?.libVersion || "unknown");
           return { ok: true, ...result };
         });

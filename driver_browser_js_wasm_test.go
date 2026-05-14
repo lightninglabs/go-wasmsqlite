@@ -8,11 +8,13 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/golang-migrate/migrate/v4"
+	migratetesting "github.com/golang-migrate/migrate/v4/database/testing"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 )
 
@@ -84,6 +86,18 @@ func TestBrowserDriverMemoryE2E(t *testing.T) {
 	}
 }
 
+func TestBrowserRequirePersistentRejectsMemoryE2E(t *testing.T) {
+	db, err := Open(&Options{File: ":memory:", VFS: "memory", RequirePersistent: true})
+	if err != nil {
+		t.Fatalf("open memory db handle: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.PingContext(context.Background()); err == nil {
+		t.Fatal("expected require_persistent memory open to fail")
+	}
+}
+
 func TestBrowserDriverSAHPoolE2E(t *testing.T) {
 	filename := fmt.Sprintf("/browser-sahpool-%d.db", time.Now().UnixNano())
 	db, err := Open(&Options{File: filename, VFS: "opfs-sahpool", BusyTimeout: 5000})
@@ -146,6 +160,28 @@ UPDATE users SET email = 'updated@example.com' WHERE username = 'kon';
 	if email != "updated@example.com" {
 		t.Fatalf("unexpected migrated email: %q", email)
 	}
+}
+
+func TestBrowserMigrateDriverContractE2E(t *testing.T) {
+	filename := fmt.Sprintf("/browser-migrate-contract-%d.db", time.Now().UnixNano())
+	db, err := Open(&Options{File: filename, VFS: "opfs", BusyTimeout: 5000})
+	if err != nil {
+		t.Fatalf("open migrate contract db: %v", err)
+	}
+	defer db.Close()
+
+	driver, err := NewMigrateDriver(db)
+	if err != nil {
+		t.Fatalf("new migrate driver: %v", err)
+	}
+
+	migratetesting.Test(t, driver, []byte(`
+CREATE TABLE migrate_contract (
+    id INTEGER PRIMARY KEY,
+    label TEXT NOT NULL
+);
+INSERT INTO migrate_contract(id, label) VALUES (1, 'ok');
+`))
 }
 
 func TestBrowserExampleMigrationsE2E(t *testing.T) {
@@ -214,6 +250,124 @@ func TestBrowserGolangMigrateExampleE2E(t *testing.T) {
 	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM attachments`).Scan(&count); err != nil {
 		t.Fatalf("query attachments after golang migrate: %v", err)
+	}
+}
+
+func TestBrowserEmptyBlobRoundTripE2E(t *testing.T) {
+	db, err := Open(&Options{File: ":memory:", VFS: "memory"})
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`CREATE TABLE blob_values (id INTEGER PRIMARY KEY, data BLOB)`); err != nil {
+		t.Fatalf("create blob schema: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO blob_values(id, data) VALUES (?, ?)`, 1, []byte{}); err != nil {
+		t.Fatalf("insert empty blob: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO blob_values(id, data) VALUES (?, ?)`, 2, []byte(nil)); err != nil {
+		t.Fatalf("insert null blob: %v", err)
+	}
+
+	var length int64
+	var isNull bool
+	var data []byte
+	if err := db.QueryRow(`SELECT length(data), data IS NULL, data FROM blob_values WHERE id = 1`).Scan(&length, &isNull, &data); err != nil {
+		t.Fatalf("query empty blob: %v", err)
+	}
+	if length != 0 || isNull || data == nil || len(data) != 0 {
+		t.Fatalf("empty blob mismatch: length=%d isNull=%v data=%v", length, isNull, data)
+	}
+
+	if err := db.QueryRow(`SELECT data IS NULL FROM blob_values WHERE id = 2`).Scan(&isNull); err != nil {
+		t.Fatalf("query null blob: %v", err)
+	}
+	if !isNull {
+		t.Fatal("nil []byte should bind as NULL")
+	}
+}
+
+func TestBrowserInt64RoundTripE2E(t *testing.T) {
+	db, err := Open(&Options{File: ":memory:", VFS: "memory"})
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`CREATE TABLE integer_values (id INTEGER PRIMARY KEY, value INTEGER NOT NULL)`); err != nil {
+		t.Fatalf("create integer schema: %v", err)
+	}
+
+	values := []int64{
+		42,
+		1<<53 - 1,
+		1 << 53,
+		math.MaxInt64,
+	}
+	for i, value := range values {
+		if _, err := db.Exec(`INSERT INTO integer_values(id, value) VALUES (?, ?)`, i+1, value); err != nil {
+			t.Fatalf("insert int64 %d: %v", value, err)
+		}
+	}
+
+	for i, want := range values {
+		var got int64
+		var sqliteType string
+		if err := db.QueryRow(`SELECT value, typeof(value) FROM integer_values WHERE id = ?`, i+1).Scan(&got, &sqliteType); err != nil {
+			t.Fatalf("query int64 %d: %v", want, err)
+		}
+		if got != want || sqliteType != "integer" {
+			t.Fatalf("int64 mismatch: want=%d got=%d sqliteType=%q", want, got, sqliteType)
+		}
+	}
+}
+
+func TestBrowserParseTimeE2E(t *testing.T) {
+	db, err := Open(&Options{File: ":memory:", VFS: "memory", ParseTime: true})
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`CREATE TABLE time_values (id INTEGER PRIMARY KEY, value TEXT)`); err != nil {
+		t.Fatalf("create time schema: %v", err)
+	}
+
+	withNanos := time.Date(2026, 5, 14, 13, 45, 9, 123456789, time.UTC)
+	values := []struct {
+		id   int
+		arg  interface{}
+		want time.Time
+	}{
+		{1, withNanos, withNanos},
+		{2, "2026-05-14T13:45:09Z", time.Date(2026, 5, 14, 13, 45, 9, 0, time.UTC)},
+		{3, "2026-05-14 13:45:09.123456789", withNanos},
+		{4, "2026-05-14 13:45:09", time.Date(2026, 5, 14, 13, 45, 9, 0, time.UTC)},
+		{5, "2026-05-14", time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC)},
+	}
+	for _, value := range values {
+		if _, err := db.Exec(`INSERT INTO time_values(id, value) VALUES (?, ?)`, value.id, value.arg); err != nil {
+			t.Fatalf("insert time %d: %v", value.id, err)
+		}
+	}
+
+	for _, value := range values {
+		var got time.Time
+		if err := db.QueryRow(`SELECT value FROM time_values WHERE id = ?`, value.id).Scan(&got); err != nil {
+			t.Fatalf("scan time %d: %v", value.id, err)
+		}
+		if !got.Equal(value.want) {
+			t.Fatalf("time mismatch for id=%d: want=%s got=%s", value.id, value.want.Format(time.RFC3339Nano), got.Format(time.RFC3339Nano))
+		}
+	}
+
+	var nullable sql.NullTime
+	if err := db.QueryRow(`SELECT value FROM time_values WHERE id = 1`).Scan(&nullable); err != nil {
+		t.Fatalf("scan null time: %v", err)
+	}
+	if !nullable.Valid || !nullable.Time.Equal(withNanos) {
+		t.Fatalf("unexpected null time: valid=%v value=%s", nullable.Valid, nullable.Time.Format(time.RFC3339Nano))
 	}
 }
 

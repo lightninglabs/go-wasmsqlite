@@ -16,7 +16,7 @@ Go App (WASM)
     -> SQLite WASM + OPFS storage
 ```
 
-`sqlite-worker.js` imports `sqlite3.js`, calls `sqlite3InitModule()`, opens databases with `sqlite3.oo1.OpfsDb` for the default `opfs` VFS, and falls back to `:memory:` if OPFS is unavailable. SQLite still runs in a Worker because OPFS requires worker-side file APIs.
+`sqlite-worker.js` imports `sqlite3.js`, calls `sqlite3InitModule()`, opens databases with `sqlite3.oo1.OpfsDb` for the default `opfs` VFS, and falls back to `:memory:` if OPFS is unavailable unless persistent storage is required. SQLite still runs in a Worker because OPFS requires worker-side file APIs.
 
 ## Features
 
@@ -77,8 +77,9 @@ The convenience helper sets the OPFS connection limit for you:
 
 ```go
 db, err := wasmsqlite.Open(&wasmsqlite.Options{
-    File: "/myapp.db",
-    VFS:  "opfs",
+    File:              "/myapp.db",
+    VFS:               "opfs",
+    RequirePersistent: true,
 })
 ```
 
@@ -94,7 +95,11 @@ Direct `sql.Open(...)` callers should call `db.SetMaxOpenConns(1)` for each OPFS
 - `journal_mode`: runs `PRAGMA journal_mode=<value>` after open
 - `pragma`: semicolon-separated pragmas to run after open
 - `worker_url`: optional URL for `sqlite-worker.js`
-- `parse_time`: accepted for DSN compatibility
+- `sqlite_js_url`: optional URL for `sqlite3.js`, used by `sqlite-worker.js`
+- `require_persistent`: fail instead of falling back to memory when persistent storage is unavailable
+- `parse_time`: parse SQLite timestamp strings into `time.Time` values for scans into `time.Time` or `sql.NullTime`
+
+`parse_time=true` recognizes `time.RFC3339Nano`, `time.RFC3339`, SQLite-style datetime strings with optional fractional seconds and numeric offsets, `YYYY-MM-DD HH:MM:SS`, and `YYYY-MM-DD`.
 
 Supported VFS values:
 
@@ -127,6 +132,16 @@ if err != nil {
 }
 ```
 
+`ExtractAssets` writes the runtime files in a flat layout:
+
+```text
+./static/wasm/sqlite-bridge.js
+./static/wasm/sqlite-worker.js
+./static/wasm/sqlite3.js
+./static/wasm/sqlite3.wasm
+./static/wasm/sqlite3-opfs-async-proxy.js
+```
+
 ### Serve Assets
 
 ```go
@@ -134,14 +149,23 @@ handler := wasmsqlite.AssetHandler()
 http.Handle("/wasm/", http.StripPrefix("/wasm", handler))
 ```
 
-Available paths include:
+Available flat runtime paths include:
 
 ```text
-/wasm/assets/sqlite3.wasm
-/wasm/assets/sqlite3.js
-/wasm/assets/sqlite3-opfs-async-proxy.js
-/wasm/bridge/sqlite-bridge.js
-/wasm/bridge/sqlite-worker.js
+/wasm/sqlite3.wasm
+/wasm/sqlite3.js
+/wasm/sqlite3-opfs-async-proxy.js
+/wasm/sqlite-bridge.js
+/wasm/sqlite-worker.js
+```
+
+`AssetHandler` also preserves the embedded `/assets/...` and `/bridge/...` paths for direct access, but the flat paths are the browser runtime layout. By default, `sqlite-worker.js` is resolved relative to the loaded `sqlite-bridge.js`, and `sqlite3.js` is resolved relative to `sqlite-worker.js`. If you serve files from unrelated directories, set both `worker_url` and `sqlite_js_url`.
+
+Cross-origin isolation headers must be set on the app page, not only on SQLite assets. Wrap the whole app handler:
+
+```go
+app := wasmsqlite.WithCrossOriginIsolation(http.FileServer(http.Dir("./public")))
+http.Handle("/", app)
 ```
 
 ### Access Individual Assets
@@ -207,9 +231,11 @@ switch vfsType {
 case wasmsqlite.VFSTypeOPFS:
     // Persistent OPFS storage.
 case wasmsqlite.VFSTypeMemory:
-    // In-memory storage.
+    // In-memory storage; data will reset on refresh.
 }
 ```
+
+Use `RequirePersistent: true` or `require_persistent=true` when falling back to memory would be incorrect.
 
 ## Migrations
 
