@@ -3,8 +3,12 @@
 package wasmsqlite
 
 import (
+	"context"
 	"database/sql"
+	"database/sql/driver"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"syscall/js"
 	"time"
@@ -21,7 +25,7 @@ type BridgeAdapter struct {
 func NewBridgeAdapter() (*BridgeAdapter, error) {
 	bridge := js.Global().Get("sqliteBridge")
 	if bridge.IsUndefined() {
-		return nil, fmt.Errorf("sqliteBridge not found - ensure sqlite-bridge.js is loaded")
+		return nil, fmt.Errorf("%w: ensure sqlite-bridge.js is loaded", ErrBridgeNotLoaded)
 	}
 
 	return &BridgeAdapter{
@@ -30,7 +34,7 @@ func NewBridgeAdapter() (*BridgeAdapter, error) {
 }
 
 // Open opens a database
-func (b *BridgeAdapter) Open(opts *Options) (string, error) {
+func (b *BridgeAdapter) Open(ctx context.Context, opts *Options) (string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -54,7 +58,7 @@ func (b *BridgeAdapter) Open(opts *Options) (string, error) {
 	}
 	jsOpts.Set("pragma", pragmas)
 
-	result, err := b.callAsync(openMethod, jsOpts)
+	result, err := b.callAsyncContext(ctx, openMethod, jsOpts)
 	if err != nil {
 		return "", err
 	}
@@ -74,7 +78,7 @@ func (b *BridgeAdapter) Open(opts *Options) (string, error) {
 }
 
 // Exec executes a SQL statement
-func (b *BridgeAdapter) Exec(sql string, params []interface{}) (int, int, error) {
+func (b *BridgeAdapter) Exec(ctx context.Context, sql string, params []driver.NamedValue) (int, int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -83,13 +87,12 @@ func (b *BridgeAdapter) Exec(sql string, params []interface{}) (int, int, error)
 		return 0, 0, fmt.Errorf("sqliteBridge.exec method not found")
 	}
 
-	// Convert params to JavaScript array
-	jsParams := js.Global().Get("Array").New()
-	for i, param := range params {
-		jsParams.SetIndex(i, b.toJSValue(param))
+	jsParams, err := b.toJSParams(params)
+	if err != nil {
+		return 0, 0, err
 	}
 
-	result, err := b.callAsync(execMethod, b.dbID, sql, jsParams)
+	result, err := b.callAsyncContext(ctx, execMethod, b.dbID, sql, jsParams)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -111,7 +114,7 @@ func (b *BridgeAdapter) Exec(sql string, params []interface{}) (int, int, error)
 }
 
 // Query executes a query and returns results
-func (b *BridgeAdapter) Query(sql string, params []interface{}) ([]string, [][]interface{}, error) {
+func (b *BridgeAdapter) Query(ctx context.Context, sql string, params []driver.NamedValue) ([]string, [][]interface{}, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -120,13 +123,12 @@ func (b *BridgeAdapter) Query(sql string, params []interface{}) ([]string, [][]i
 		return nil, nil, fmt.Errorf("sqliteBridge.query method not found")
 	}
 
-	// Convert params to JavaScript array
-	jsParams := js.Global().Get("Array").New()
-	for i, param := range params {
-		jsParams.SetIndex(i, b.toJSValue(param))
+	jsParams, err := b.toJSParams(params)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	result, err := b.callAsync(queryMethod, b.dbID, sql, jsParams)
+	result, err := b.callAsyncContext(ctx, queryMethod, b.dbID, sql, jsParams)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -185,7 +187,7 @@ func (b *BridgeAdapter) Query(sql string, params []interface{}) ([]string, [][]i
 }
 
 // Begin starts a transaction
-func (b *BridgeAdapter) Begin() error {
+func (b *BridgeAdapter) Begin(ctx context.Context) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -194,7 +196,7 @@ func (b *BridgeAdapter) Begin() error {
 		return fmt.Errorf("sqliteBridge.begin method not found")
 	}
 
-	_, err := b.callAsync(beginMethod, b.dbID)
+	_, err := b.callAsyncContext(ctx, beginMethod, b.dbID)
 	return err
 }
 
@@ -208,7 +210,7 @@ func (b *BridgeAdapter) Commit() error {
 		return fmt.Errorf("sqliteBridge.commit method not found")
 	}
 
-	_, err := b.callAsync(commitMethod, b.dbID)
+	_, err := b.callAsyncContext(context.Background(), commitMethod, b.dbID)
 	return err
 }
 
@@ -222,7 +224,7 @@ func (b *BridgeAdapter) Rollback() error {
 		return fmt.Errorf("sqliteBridge.rollback method not found")
 	}
 
-	_, err := b.callAsync(rollbackMethod, b.dbID)
+	_, err := b.callAsyncContext(context.Background(), rollbackMethod, b.dbID)
 	return err
 }
 
@@ -236,7 +238,7 @@ func (b *BridgeAdapter) Close() error {
 		return fmt.Errorf("sqliteBridge.close method not found")
 	}
 
-	_, err := b.callAsync(closeMethod, b.dbID)
+	_, err := b.callAsyncContext(context.Background(), closeMethod, b.dbID)
 	if err == nil {
 		b.dbID = ""
 	}
@@ -244,7 +246,7 @@ func (b *BridgeAdapter) Close() error {
 }
 
 // Dump exports the database as SQL statements
-func (b *BridgeAdapter) Dump() (string, error) {
+func (b *BridgeAdapter) Dump(ctx context.Context) (string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -253,7 +255,7 @@ func (b *BridgeAdapter) Dump() (string, error) {
 		return "", fmt.Errorf("sqliteBridge.dump method not found")
 	}
 
-	result, err := b.callAsync(dumpMethod, b.dbID)
+	result, err := b.callAsyncContext(ctx, dumpMethod, b.dbID)
 	if err != nil {
 		return "", err
 	}
@@ -270,7 +272,7 @@ func (b *BridgeAdapter) Dump() (string, error) {
 }
 
 // Load imports SQL statements to restore the database
-func (b *BridgeAdapter) Load(dump string) error {
+func (b *BridgeAdapter) Load(ctx context.Context, dump string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -279,7 +281,7 @@ func (b *BridgeAdapter) Load(dump string) error {
 		return fmt.Errorf("sqliteBridge.load method not found")
 	}
 
-	_, err := b.callAsync(loadMethod, b.dbID, dump)
+	_, err := b.callAsyncContext(ctx, loadMethod, b.dbID, dump)
 	return err
 }
 
@@ -294,8 +296,18 @@ func uint8ArrayToBytes(val js.Value) []byte {
 	return bytes
 }
 
-// callAsync calls a JavaScript async function and waits for the result
 func (b *BridgeAdapter) callAsync(method js.Value, args ...interface{}) (js.Value, error) {
+	return b.callAsyncContext(context.Background(), method, args...)
+}
+
+// callAsyncContext calls a JavaScript async function and waits for the result
+// or for ctx cancellation. Context cancellation stops waiting on the Go side;
+// the already-posted worker request may still complete later.
+func (b *BridgeAdapter) callAsyncContext(ctx context.Context, method js.Value, args ...interface{}) (js.Value, error) {
+	if err := ctx.Err(); err != nil {
+		return js.Undefined(), err
+	}
+
 	// Call the method
 	promise := method.Invoke(args...)
 	if promise.IsUndefined() {
@@ -308,8 +320,19 @@ func (b *BridgeAdapter) callAsync(method js.Value, args ...interface{}) (js.Valu
 		err    error
 	}, 1)
 
+	var then js.Func
+	var catch js.Func
+	var releaseOnce sync.Once
+	releaseCallbacks := func() {
+		releaseOnce.Do(func() {
+			then.Release()
+			catch.Release()
+		})
+	}
+
 	// Handle promise resolution
-	then := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	then = js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		defer releaseCallbacks()
 		defer func() {
 			if r := recover(); r != nil {
 				done <- struct {
@@ -336,7 +359,7 @@ func (b *BridgeAdapter) callAsync(method js.Value, args ...interface{}) (js.Valu
 				done <- struct {
 					result js.Value
 					err    error
-				}{js.Undefined(), fmt.Errorf("%s", errorMsg)}
+				}{js.Undefined(), classifyBridgeError(errorMsg)}
 				return nil
 			}
 		}
@@ -347,10 +370,10 @@ func (b *BridgeAdapter) callAsync(method js.Value, args ...interface{}) (js.Valu
 		}{result, nil}
 		return nil
 	})
-	defer then.Release()
 
 	// Handle promise rejection
-	catch := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	catch = js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		defer releaseCallbacks()
 		defer func() {
 			if r := recover(); r != nil {
 				done <- struct {
@@ -379,17 +402,83 @@ func (b *BridgeAdapter) callAsync(method js.Value, args ...interface{}) (js.Valu
 		done <- struct {
 			result js.Value
 			err    error
-		}{js.Undefined(), fmt.Errorf("%s", errorMsg)}
+		}{js.Undefined(), classifyBridgeError(errorMsg)}
 		return nil
 	})
-	defer catch.Release()
 
 	// Attach handlers
 	promise.Call("then", then).Call("catch", catch)
 
 	// Wait for completion
-	result := <-done
-	return result.result, result.err
+	select {
+	case result := <-done:
+		return result.result, result.err
+	case <-ctx.Done():
+		return js.Undefined(), ctx.Err()
+	}
+}
+
+func (b *BridgeAdapter) toJSParams(args []driver.NamedValue) (js.Value, error) {
+	if len(args) == 0 {
+		return js.Global().Get("Array").New(), nil
+	}
+
+	hasNamed := false
+	hasPositional := false
+	for _, arg := range args {
+		if arg.Name != "" {
+			hasNamed = true
+		} else {
+			hasPositional = true
+		}
+	}
+
+	if hasNamed && hasPositional {
+		return js.Undefined(), fmt.Errorf("%w: mixed named and positional parameters are not supported", ErrNamedParameter)
+	}
+
+	if hasNamed {
+		obj := js.Global().Get("Object").New()
+		for _, arg := range args {
+			name := strings.TrimLeft(arg.Name, ":$@")
+			if name == "" {
+				return js.Undefined(), fmt.Errorf("%w: empty parameter name", ErrNamedParameter)
+			}
+			if !obj.Get(name).IsUndefined() {
+				return js.Undefined(), fmt.Errorf("%w: duplicate parameter name %q", ErrNamedParameter, name)
+			}
+			obj.Set(name, b.toJSValue(arg.Value))
+		}
+		return obj, nil
+	}
+
+	jsParams := js.Global().Get("Array").New(len(args))
+	for i, arg := range args {
+		jsParams.SetIndex(i, b.toJSValue(arg.Value))
+	}
+	return jsParams, nil
+}
+
+func classifyBridgeError(message string) error {
+	lower := strings.ToLower(message)
+	switch {
+	case strings.Contains(lower, "persistent") && strings.Contains(lower, "required"):
+		return fmt.Errorf("%w: %s", ErrPersistentRequired, message)
+	case strings.Contains(lower, "opfs") && strings.Contains(lower, "unavailable"):
+		return fmt.Errorf("%w: %s", ErrOPFSUnavailable, message)
+	case strings.Contains(lower, "already open"):
+		return fmt.Errorf("%w: %s", ErrDuplicateOpen, message)
+	case strings.Contains(lower, "vfs") && strings.Contains(lower, "unavailable"):
+		return fmt.Errorf("%w: %s", ErrUnsupportedVFS, message)
+	case strings.Contains(lower, "named sql parameter") || strings.Contains(lower, "named parameter"):
+		return fmt.Errorf("%w: %s", ErrNamedParameter, message)
+	case strings.Contains(lower, "protocol mismatch"):
+		return fmt.Errorf("%w: %s", ErrProtocolMismatch, message)
+	case strings.Contains(lower, "sqlite3.js") || strings.Contains(lower, "sqlite3.wasm") || strings.Contains(lower, "importscripts"):
+		return fmt.Errorf("%w: %s", ErrAssetUnavailable, message)
+	default:
+		return errors.New(message)
+	}
 }
 
 // toJSValue safely converts a Go value to a JavaScript value, handling nil and special cases

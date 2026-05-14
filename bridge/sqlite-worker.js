@@ -1,5 +1,6 @@
 // Dedicated SQLite worker using the supported sqlite3.oo1 API directly.
 
+const workerProtocolVersion = 1;
 let sqlite3;
 let nextDbId = 1;
 const dbs = new Map();
@@ -105,9 +106,61 @@ function normalizeValue(value) {
   return value;
 }
 
+function stripParamPrefix(name) {
+  return String(name || "").replace(/^[:@$]/, "");
+}
+
+function normalizeNamedParams(stmt, params) {
+  const normalized = Object.create(null);
+  const usedKeys = new Set();
+
+  for (let i = 1; i <= stmt.parameterCount; i++) {
+    const bindName = stmt.getParamName(i);
+    if (!bindName) continue;
+
+    const bareName = stripParamPrefix(bindName);
+    let value;
+    let matchedKey = "";
+    for (const candidate of [bindName, bareName, `:${bareName}`, `$${bareName}`, `@${bareName}`]) {
+      if (Object.prototype.hasOwnProperty.call(params, candidate)) {
+        value = params[candidate];
+        matchedKey = candidate;
+        break;
+      }
+    }
+    if (!matchedKey) {
+      throw new Error(`missing named SQL parameter: ${bindName}`);
+    }
+
+    normalized[bindName] = normalizeValue(value);
+    usedKeys.add(matchedKey);
+  }
+
+  for (const key of Object.keys(params)) {
+    if (!usedKeys.has(key)) {
+      throw new Error(`unused named SQL parameter: ${key}`);
+    }
+  }
+
+  return normalized;
+}
+
 function bindParams(stmt, params) {
-  if (!params || !params.length) return;
-  stmt.bind(params.map(normalizeValue));
+  if (!params) return;
+  if (Array.isArray(params)) {
+    if (!params.length) return;
+    stmt.bind(params.map(normalizeValue));
+    return;
+  }
+
+  if (typeof params === "object") {
+    const keys = Object.keys(params);
+    if (!keys.length) return;
+    stmt.bind(normalizeNamedParams(stmt, params));
+    return;
+  }
+
+  throw new Error("invalid SQL parameter container");
 }
 
 function getDB(dbId) {
@@ -134,9 +187,19 @@ function runQuery(db, sql, params) {
 
 function runExec(db, sql, params) {
   const beforeChanges = db.changes(true);
-  const options = { sql };
-  if (params && params.length) options.bind = params.map(normalizeValue);
-  db.exec(options);
+  if (params && !Array.isArray(params) && Object.keys(params).length) {
+    const stmt = db.prepare(sql);
+    try {
+      bindParams(stmt, params);
+      while (stmt.step()) {}
+    } finally {
+      stmt.finalize();
+    }
+  } else {
+    const options = { sql };
+    if (params && params.length) options.bind = params.map(normalizeValue);
+    db.exec(options);
+  }
 
   return {
     rowsAffected: db.changes(true) - beforeChanges,
@@ -145,8 +208,11 @@ function runExec(db, sql, params) {
 }
 
 async function init(args = {}) {
+  if (args.expectedBridgeProtocolVersion && args.expectedBridgeProtocolVersion !== workerProtocolVersion) {
+    throw new Error(`SQLite bridge protocol mismatch: expected ${workerProtocolVersion}, got ${args.expectedBridgeProtocolVersion}`);
+  }
   await ensureSQLite(args);
-  return { version: sqlite3.version, vfsList: vfsList() };
+  return { version: sqlite3.version, vfsList: vfsList(), workerProtocolVersion };
 }
 
 async function open(args) {

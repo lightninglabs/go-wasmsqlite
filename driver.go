@@ -51,7 +51,7 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	}
 
 	// Open database through bridge
-	vfsType, err := adapter.Open(opts)
+	vfsType, err := adapter.Open(ctx, opts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -120,7 +120,7 @@ func (c *Conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 
 	// SQLite doesn't support read-only transactions or isolation levels in the same way
 	// We'll just start a regular transaction
-	err := c.adapter.Begin()
+	err := c.adapter.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -136,13 +136,7 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 		return nil, driver.ErrBadConn
 	}
 
-	// Convert params to interface{} slice
-	paramIfaces := make([]interface{}, len(args))
-	for i, arg := range args {
-		paramIfaces[i] = arg.Value
-	}
-
-	rowsAffected, lastInsertID, err := c.adapter.Exec(query, paramIfaces)
+	rowsAffected, lastInsertID, err := c.adapter.Exec(ctx, query, args)
 	if err != nil {
 		return nil, err
 	}
@@ -161,13 +155,7 @@ func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		return nil, driver.ErrBadConn
 	}
 
-	// Convert params to interface{} slice
-	paramIfaces := make([]interface{}, len(args))
-	for i, arg := range args {
-		paramIfaces[i] = arg.Value
-	}
-
-	columns, rows, err := c.adapter.Query(query, paramIfaces)
+	columns, rows, err := c.adapter.Query(ctx, query, args)
 	if err != nil {
 		return nil, err
 	}
@@ -281,7 +269,7 @@ func (c *Conn) Dump(ctx context.Context) (string, error) {
 		return "", driver.ErrBadConn
 	}
 
-	return c.adapter.Dump()
+	return c.adapter.Dump(ctx)
 }
 
 // Load imports SQL statements to restore the database
@@ -290,5 +278,5 @@ func (c *Conn) Load(ctx context.Context, dump string) error {
 		return driver.ErrBadConn
 	}
 
-	return c.adapter.Load(dump)
+	return c.adapter.Load(ctx, dump)
 }

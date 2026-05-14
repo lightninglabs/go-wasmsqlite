@@ -46,6 +46,16 @@ func DumpDatabase(db *sql.DB) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	return DumpDatabaseContext(ctx, db)
+}
+
+// DumpDatabaseContext exports the entire database as SQL statements while
+// respecting the provided context.
+func DumpDatabaseContext(ctx context.Context, db *sql.DB) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to get connection: %w", err)
@@ -79,6 +89,16 @@ func DumpDatabase(db *sql.DB) (string, error) {
 func LoadDatabase(db *sql.DB, dump string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+
+	return LoadDatabaseContext(ctx, db, dump)
+}
+
+// LoadDatabaseContext imports SQL statements to restore a database while
+// respecting the provided context.
+func LoadDatabaseContext(ctx context.Context, db *sql.DB, dump string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	conn, err := db.Conn(ctx)
 	if err != nil {

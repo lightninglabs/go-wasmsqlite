@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall/js"
 	"time"
 )
@@ -216,7 +217,7 @@ func createWorker(opts *Options) (js.Value, error) {
 	// Check if the SQLite bridge is available
 	bridge := js.Global().Get("sqliteBridge")
 	if bridge.IsUndefined() {
-		return js.Null(), fmt.Errorf("sqliteBridge not found - ensure sqlite-bridge.js is loaded")
+		return js.Null(), fmt.Errorf("%w: ensure sqlite-bridge.js is loaded", ErrBridgeNotLoaded)
 	}
 
 	// Initialize SQLite WASM through the bridge
@@ -256,9 +257,30 @@ func initializeSQLiteBridge(bridge js.Value, opts *Options) error {
 
 	// Wait for the promise to resolve
 	done := make(chan error, 1)
+	var then js.Func
+	var catch js.Func
+	var releaseOnce sync.Once
+	releaseCallbacks := func() {
+		releaseOnce.Do(func() {
+			then.Release()
+			catch.Release()
+		})
+	}
+
+	checkProtocol := func(result js.Value, field string) error {
+		value := result.Get(field)
+		if value.IsUndefined() {
+			return fmt.Errorf("%w: missing %s", ErrProtocolMismatch, field)
+		}
+		if got := value.Int(); got != ProtocolVersion {
+			return fmt.Errorf("%w: %s expected %d, got %d", ErrProtocolMismatch, field, ProtocolVersion, got)
+		}
+		return nil
+	}
 
 	// Handle promise resolution
-	then := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	then = js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		defer releaseCallbacks()
 		defer func() {
 			if r := recover(); r != nil {
 				done <- fmt.Errorf("promise then handler panicked: %v", r)
@@ -270,7 +292,17 @@ func initializeSQLiteBridge(bridge js.Value, opts *Options) error {
 			result := args[0]
 			if !result.IsUndefined() && !result.Get("ok").IsUndefined() {
 				if !result.Get("ok").Bool() {
-					done <- fmt.Errorf("bridge initialization failed")
+					done <- fmt.Errorf("%w: bridge initialization failed", ErrWorkerInitFailed)
+					return nil
+				}
+			}
+			if !result.IsUndefined() {
+				if err := checkProtocol(result, "bridgeProtocolVersion"); err != nil {
+					done <- err
+					return nil
+				}
+				if err := checkProtocol(result, "workerProtocolVersion"); err != nil {
+					done <- err
 					return nil
 				}
 			}
@@ -279,10 +311,10 @@ func initializeSQLiteBridge(bridge js.Value, opts *Options) error {
 		done <- nil
 		return nil
 	})
-	defer then.Release()
 
 	// Handle promise rejection
-	catch := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	catch = js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		defer releaseCallbacks()
 		defer func() {
 			if r := recover(); r != nil {
 				done <- fmt.Errorf("promise catch handler panicked: %v", r)
@@ -291,13 +323,12 @@ func initializeSQLiteBridge(bridge js.Value, opts *Options) error {
 
 		if len(args) > 0 {
 			err := args[0]
-			done <- fmt.Errorf("bridge initialization failed: %s", err.String())
+			done <- fmt.Errorf("%w: %w", ErrWorkerInitFailed, classifyBridgeError(err.String()))
 		} else {
-			done <- fmt.Errorf("bridge initialization failed with unknown error")
+			done <- fmt.Errorf("%w: unknown error", ErrWorkerInitFailed)
 		}
 		return nil
 	})
-	defer catch.Release()
 
 	// Attach handlers
 	promise.Call("then", then).Call("catch", catch)
@@ -307,6 +338,6 @@ func initializeSQLiteBridge(bridge js.Value, opts *Options) error {
 	case err := <-done:
 		return err
 	case <-ctx.Done():
-		return fmt.Errorf("bridge initialization timed out")
+		return ctx.Err()
 	}
 }
