@@ -6,16 +6,20 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"embed"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
+	"syscall/js"
 	"testing"
 	"time"
 
 	"github.com/golang-migrate/migrate/v4"
 	migratetesting "github.com/golang-migrate/migrate/v4/database/testing"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
+	database "github.com/sputn1ck/go-wasmsqlite/example/generated"
 )
 
 //go:embed example/migrations/*.sql
@@ -86,6 +90,102 @@ func TestBrowserDriverMemoryE2E(t *testing.T) {
 	}
 }
 
+func TestBrowserContextCancellationE2E(t *testing.T) {
+	db, err := Open(&Options{File: ":memory:", VFS: "memory"})
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer db.Close()
+
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("conn: %v", err)
+	}
+	defer conn.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err = conn.Raw(func(driverConn interface{}) error {
+		c, ok := driverConn.(*Conn)
+		if !ok {
+			t.Fatalf("unexpected driver connection type %T", driverConn)
+		}
+		_, err := c.QueryContext(ctx, `SELECT 1`, nil)
+		return err
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestBrowserNamedParametersE2E(t *testing.T) {
+	db, err := Open(&Options{File: ":memory:", VFS: "memory"})
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`CREATE TABLE named_values (id INTEGER PRIMARY KEY, label TEXT, score INTEGER, data BLOB)`); err != nil {
+		t.Fatalf("create named schema: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO named_values(id, label, score, data) VALUES (:id, $label, @score, :data)`,
+		sql.Named("id", 7),
+		sql.Named("label", "named"),
+		sql.Named("score", int64(99)),
+		sql.Named("data", []byte{0x01, 0x02}),
+	); err != nil {
+		t.Fatalf("insert named params: %v", err)
+	}
+
+	var (
+		label string
+		score int64
+		data  []byte
+	)
+	if err := db.QueryRow(
+		`SELECT label, score, data FROM named_values WHERE id = :id`,
+		sql.Named("id", 7),
+	).Scan(&label, &score, &data); err != nil {
+		t.Fatalf("query named params: %v", err)
+	}
+	if label != "named" || score != 99 || !bytes.Equal(data, []byte{0x01, 0x02}) {
+		t.Fatalf("unexpected named values: label=%q score=%d data=%x", label, score, data)
+	}
+
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("conn: %v", err)
+	}
+	defer conn.Close()
+
+	err = conn.Raw(func(driverConn interface{}) error {
+		c, ok := driverConn.(*Conn)
+		if !ok {
+			t.Fatalf("unexpected driver connection type %T", driverConn)
+		}
+		_, err := c.QueryContext(context.Background(), `SELECT :id, ?`, []driver.NamedValue{
+			{Ordinal: 1, Name: "id", Value: 1},
+			{Ordinal: 2, Value: 2},
+		})
+		return err
+	})
+	if !errors.Is(err, ErrNamedParameter) {
+		t.Fatalf("expected ErrNamedParameter for mixed params, got %v", err)
+	}
+}
+
+func TestBrowserProtocolMetadataE2E(t *testing.T) {
+	bridgeProtocol := js.Global().Get("sqliteBridge").Get("protocolVersion")
+	if bridgeProtocol.IsUndefined() {
+		t.Fatal("sqliteBridge.protocolVersion is missing")
+	}
+	if got := bridgeProtocol.Int(); got != ProtocolVersion {
+		t.Fatalf("bridge protocol mismatch: got %d want %d", got, ProtocolVersion)
+	}
+}
+
 func TestBrowserRequirePersistentRejectsMemoryE2E(t *testing.T) {
 	db, err := Open(&Options{File: ":memory:", VFS: "memory", RequirePersistent: true})
 	if err != nil {
@@ -93,8 +193,42 @@ func TestBrowserRequirePersistentRejectsMemoryE2E(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := db.PingContext(context.Background()); err == nil {
-		t.Fatal("expected require_persistent memory open to fail")
+	if err := db.PingContext(context.Background()); !errors.Is(err, ErrPersistentRequired) {
+		t.Fatalf("expected ErrPersistentRequired, got %v", err)
+	}
+}
+
+func TestBrowserDuplicateOpenE2E(t *testing.T) {
+	filename := fmt.Sprintf("/browser-duplicate-open-%d.db", time.Now().UnixNano())
+	db1, err := Open(&Options{File: filename, VFS: "opfs", RequirePersistent: true})
+	if err != nil {
+		t.Fatalf("open first db handle: %v", err)
+	}
+	defer db1.Close()
+	if err := db1.PingContext(context.Background()); err != nil {
+		t.Fatalf("ping first db: %v", err)
+	}
+
+	db2, err := Open(&Options{File: filename, VFS: "opfs", RequirePersistent: true})
+	if err != nil {
+		t.Fatalf("open second db handle: %v", err)
+	}
+	defer db2.Close()
+
+	if err := db2.PingContext(context.Background()); !errors.Is(err, ErrDuplicateOpen) {
+		t.Fatalf("expected ErrDuplicateOpen, got %v", err)
+	}
+}
+
+func TestBrowserUnsupportedVFSE2E(t *testing.T) {
+	db, err := Open(&Options{File: "/unsupported-vfs.db", VFS: "definitely-not-a-vfs"})
+	if err != nil {
+		t.Fatalf("open unsupported vfs db handle: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.PingContext(context.Background()); !errors.Is(err, ErrUnsupportedVFS) {
+		t.Fatalf("expected ErrUnsupportedVFS, got %v", err)
 	}
 }
 
@@ -368,6 +502,253 @@ func TestBrowserParseTimeE2E(t *testing.T) {
 	}
 	if !nullable.Valid || !nullable.Time.Equal(withNanos) {
 		t.Fatalf("unexpected null time: valid=%v value=%s", nullable.Valid, nullable.Time.Format(time.RFC3339Nano))
+	}
+}
+
+func TestBrowserSQLShapesE2E(t *testing.T) {
+	db, err := Open(&Options{File: ":memory:", VFS: "memory", ParseTime: true})
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`
+CREATE TABLE shape_users (
+  id INTEGER PRIMARY KEY,
+  username TEXT NOT NULL,
+  avatar BLOB,
+  created_at TEXT,
+  nullable TEXT
+);
+CREATE TABLE shape_posts (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  published BOOLEAN,
+  FOREIGN KEY(user_id) REFERENCES shape_users(id)
+);
+`); err != nil {
+		t.Fatalf("create SQL shape schema: %v", err)
+	}
+
+	createdAt := time.Date(2026, 5, 14, 16, 1, 2, 345678900, time.UTC)
+	var userID int64
+	if err := db.QueryRow(
+		`INSERT INTO shape_users(username, avatar, created_at, nullable) VALUES (?, ?, ?, ?) RETURNING id`,
+		"alice", []byte{}, createdAt, nil,
+	).Scan(&userID); err != nil {
+		t.Fatalf("INSERT RETURNING explicit id: %v", err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin SQL shape transaction: %v", err)
+	}
+	var postID int64
+	if err := tx.QueryRow(
+		`INSERT INTO shape_posts(user_id, title, published) VALUES (?, ?, ?) RETURNING id`,
+		userID, "draft", false,
+	).Scan(&postID); err != nil {
+		tx.Rollback()
+		t.Fatalf("INSERT RETURNING post in transaction: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit SQL shape transaction: %v", err)
+	}
+
+	var (
+		aliasName string
+		title     string
+		when      time.Time
+		nullable  sql.NullString
+		avatar    []byte
+	)
+	if err := db.QueryRow(`
+WITH recent_posts AS (
+  SELECT id, user_id, title FROM shape_posts WHERE id = ?
+)
+SELECT u.username AS alias_name, rp.title AS post_title, u.created_at, u.nullable, u.avatar
+FROM recent_posts rp
+JOIN shape_users u ON u.id = rp.user_id
+WHERE u.id = ?
+`, postID, userID).Scan(&aliasName, &title, &when, &nullable, &avatar); err != nil {
+		t.Fatalf("CTE JOIN SELECT aliases explicit columns: %v", err)
+	}
+	if aliasName != "alice" || title != "draft" || !when.Equal(createdAt) || nullable.Valid || avatar == nil || len(avatar) != 0 {
+		t.Fatalf("unexpected SQL shape values: alias=%q title=%q when=%s nullable=%v avatar=%v", aliasName, title, when.Format(time.RFC3339Nano), nullable, avatar)
+	}
+
+	var updatedTitle string
+	if err := db.QueryRow(
+		`UPDATE shape_posts SET title = ? WHERE id = ? RETURNING title AS updated_title`,
+		"published", postID,
+	).Scan(&updatedTitle); err != nil {
+		t.Fatalf("UPDATE RETURNING alias: %v", err)
+	}
+	if updatedTitle != "published" {
+		t.Fatalf("unexpected updated title: %q", updatedTitle)
+	}
+
+	var deletedID int64
+	if err := db.QueryRow(`DELETE FROM shape_posts WHERE id = ? RETURNING id`, postID).Scan(&deletedID); err != nil {
+		t.Fatalf("DELETE RETURNING id: %v", err)
+	}
+	if deletedID != postID {
+		t.Fatalf("unexpected deleted id: got %d want %d", deletedID, postID)
+	}
+}
+
+func TestBrowserGeneratedQueriesE2E(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(&Options{File: ":memory:", VFS: "memory", ParseTime: true})
+	if err != nil {
+		t.Fatalf("open generated-query db: %v", err)
+	}
+	defer db.Close()
+
+	driver, err := NewMigrateDriver(db)
+	if err != nil {
+		t.Fatalf("new migrate driver for generated queries: %v", err)
+	}
+	for _, name := range []string{
+		"example/migrations/001_initial_schema.up.sql",
+		"example/migrations/002_add_updated_at.up.sql",
+		"example/migrations/003_add_blob_fields.up.sql",
+	} {
+		data, err := browserMigrationFS.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read generated-query migration %s: %v", name, err)
+		}
+		if err := driver.Run(bytes.NewReader(data)); err != nil {
+			t.Fatalf("run generated-query migration %s: %v", name, err)
+		}
+	}
+
+	q := database.New(db)
+	user, err := q.CreateUser(ctx, database.CreateUserParams{
+		Username: "generated-alice",
+		Email:    "generated-alice@example.com",
+	})
+	if err != nil {
+		t.Fatalf("generated CreateUser: %v", err)
+	}
+	if err := q.UpdateUserAvatar(ctx, database.UpdateUserAvatarParams{
+		ID:       user.ID,
+		Avatar:   []byte{},
+		Metadata: []byte{0x01, 0x02, 0x03},
+	}); err != nil {
+		t.Fatalf("generated UpdateUserAvatar with empty BLOB: %v", err)
+	}
+	userWithAvatar, err := q.GetUserWithAvatar(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("generated GetUserWithAvatar: %v", err)
+	}
+	if userWithAvatar.Avatar == nil || len(userWithAvatar.Avatar) != 0 || !bytes.Equal(userWithAvatar.Metadata, []byte{0x01, 0x02, 0x03}) {
+		t.Fatalf("generated BLOB mismatch: avatar=%v metadata=%x", userWithAvatar.Avatar, userWithAvatar.Metadata)
+	}
+
+	post, err := q.CreatePost(ctx, database.CreatePostParams{
+		UserID:    user.ID,
+		Title:     "generated draft",
+		Content:   sql.NullString{String: "body", Valid: true},
+		Published: sql.NullBool{Bool: false, Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("generated CreatePost RETURNING: %v", err)
+	}
+	joinedPost, err := q.GetPost(ctx, post.ID)
+	if err != nil {
+		t.Fatalf("generated GetPost JOIN: %v", err)
+	}
+	if joinedPost.Username != user.Username || joinedPost.Title != post.Title {
+		t.Fatalf("generated GetPost mismatch: username=%q title=%q", joinedPost.Username, joinedPost.Title)
+	}
+	if !joinedPost.CreatedAt.Valid {
+		t.Fatalf("generated created_at time was not parsed: created=%v", joinedPost.CreatedAt)
+	}
+	posts, err := q.ListPostsByUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("generated ListPostsByUser: %v", err)
+	}
+	if len(posts) != 1 {
+		t.Fatalf("generated ListPostsByUser count=%d", len(posts))
+	}
+	if err := q.UpdatePost(ctx, database.UpdatePostParams{
+		ID:        post.ID,
+		Title:     "generated published",
+		Content:   sql.NullString{},
+		Published: sql.NullBool{Bool: true, Valid: true},
+	}); err != nil {
+		t.Fatalf("generated UpdatePost: %v", err)
+	}
+	updatedPost, err := q.GetPost(ctx, post.ID)
+	if err != nil {
+		t.Fatalf("generated GetPost after UpdatePost: %v", err)
+	}
+	if updatedPost.Title != "generated published" || updatedPost.Content.Valid {
+		t.Fatalf("generated updated post mismatch: title=%q content=%v updated=%v", updatedPost.Title, updatedPost.Content, updatedPost.UpdatedAt)
+	}
+
+	attachment, err := q.CreateAttachment(ctx, database.CreateAttachmentParams{
+		UserID:      user.ID,
+		Filename:    "payload.bin",
+		ContentType: sql.NullString{String: "application/octet-stream", Valid: true},
+		Data:        []byte{0x00, 0x7f, 0xff},
+		Thumbnail:   []byte{},
+		Size:        sql.NullInt64{Int64: 3, Valid: true},
+		Checksum:    []byte{0xaa, 0xbb},
+	})
+	if err != nil {
+		t.Fatalf("generated CreateAttachment RETURNING BLOB: %v", err)
+	}
+	data, err := q.GetAttachmentData(ctx, attachment.ID)
+	if err != nil {
+		t.Fatalf("generated GetAttachmentData: %v", err)
+	}
+	if !bytes.Equal(data, []byte{0x00, 0x7f, 0xff}) {
+		t.Fatalf("generated attachment data mismatch: %x", data)
+	}
+	attachments, err := q.ListAttachmentsByUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("generated ListAttachmentsByUser: %v", err)
+	}
+	if len(attachments) != 1 {
+		t.Fatalf("generated ListAttachmentsByUser count=%d", len(attachments))
+	}
+	if err := q.UpdateAttachmentThumbnail(ctx, database.UpdateAttachmentThumbnailParams{
+		ID:        attachment.ID,
+		Thumbnail: []byte{0x10, 0x20},
+	}); err != nil {
+		t.Fatalf("generated UpdateAttachmentThumbnail: %v", err)
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("generated transaction begin: %v", err)
+	}
+	txq := q.WithTx(tx)
+	txPost, err := txq.CreatePost(ctx, database.CreatePostParams{
+		UserID:    user.ID,
+		Title:     "generated tx",
+		Content:   sql.NullString{},
+		Published: sql.NullBool{Bool: false, Valid: true},
+	})
+	if err != nil {
+		tx.Rollback()
+		t.Fatalf("generated transactional CreatePost: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("generated transaction commit: %v", err)
+	}
+	if _, err := q.GetPost(ctx, txPost.ID); err != nil {
+		t.Fatalf("generated transactional GetPost after commit: %v", err)
+	}
+
+	if err := q.DeleteAttachment(ctx, attachment.ID); err != nil {
+		t.Fatalf("generated DeleteAttachment: %v", err)
+	}
+	if err := q.DeletePost(ctx, post.ID); err != nil {
+		t.Fatalf("generated DeletePost: %v", err)
 	}
 }
 

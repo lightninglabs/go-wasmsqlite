@@ -46,7 +46,7 @@ test:
 	@echo "🧪 Running tests..."
 	go test -v ./...
 	@echo "✅ Tests passed"
-	@echo "ℹ️  Browser tests are opt-in: run make browser-test"
+	@echo "ℹ️  Run make browser-test for headless Chrome E2E coverage"
 
 browser-test: build-example
 	@echo "🌐 Running browser E2E tests..."
@@ -90,6 +90,7 @@ help:
 	@echo "  make build-example- Build example only"
 	@echo "  make serve        - Build and serve the demo locally"
 	@echo "  make test         - Run tests"
+	@echo "  make browser-test - Run headless Chrome browser E2E tests"
 	@echo "  make clean        - Clean build artifacts"
 	@echo "  make check        - Check requirements"
 	@echo "  make help         - Show this help"

@@ -224,6 +224,143 @@ func TestBrowserE2EPagesLikeSmoke(t *testing.T) {
 	}
 }
 
+func TestBrowserE2EMultiContextOPFS(t *testing.T) {
+	if os.Getenv("WASM_BROWSER_TEST") != "1" {
+		t.Skip("set WASM_BROWSER_TEST=1 to run browser E2E tests")
+	}
+
+	tmpDir := t.TempDir()
+	if err := copyBrowserTestAssets(tmpDir); err != nil {
+		t.Fatalf("copy browser test assets: %v", err)
+	}
+	if err := writeBrowserProbeIndex(tmpDir); err != nil {
+		t.Fatalf("write browser probe index: %v", err)
+	}
+
+	server, url, err := serveBrowserTestDir(tmpDir)
+	if err != nil {
+		t.Fatalf("start browser test server: %v", err)
+	}
+	defer server.Shutdown(context.Background())
+
+	allocCtx, cancel := chromedp.NewExecAllocator(
+		context.Background(),
+		append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.Flag("headless", true),
+			chromedp.Flag("disable-gpu", true),
+			chromedp.Flag("no-sandbox", true),
+		)...,
+	)
+	defer cancel()
+
+	page1, cancel := chromedp.NewContext(allocCtx)
+	defer cancel()
+	page1, cancel = context.WithTimeout(page1, 60*time.Second)
+	defer cancel()
+
+	var first browserProbeResult
+	if err := chromedp.Run(page1,
+		chromedp.Navigate(url),
+		chromedp.WaitReady("body"),
+		evaluateAwait(`window.openWasmsqliteProbe("/shared-multitab.db", true)`, &first),
+	); err != nil {
+		t.Fatalf("open first page db: %v", err)
+	}
+	if !first.OK {
+		t.Fatalf("first page did not open OPFS db: %+v", first)
+	}
+
+	page2, cancel := chromedp.NewContext(page1)
+	defer cancel()
+	page2, cancel = context.WithTimeout(page2, 60*time.Second)
+	defer cancel()
+
+	var second browserProbeResult
+	if err := chromedp.Run(page2,
+		chromedp.Navigate(url),
+		chromedp.WaitReady("body"),
+		evaluateAwait(`window.openWasmsqliteProbe("/shared-multitab.db", true)`, &second),
+	); err != nil {
+		t.Fatalf("open second page db: %v", err)
+	}
+	if !second.OK && second.Error == "" {
+		t.Fatalf("second page failure is missing an actionable error: %+v", second)
+	}
+}
+
+func TestBrowserE2EIsolatedBrowserContextOPFS(t *testing.T) {
+	if os.Getenv("WASM_BROWSER_TEST") != "1" {
+		t.Skip("set WASM_BROWSER_TEST=1 to run browser E2E tests")
+	}
+
+	tmpDir := t.TempDir()
+	if err := copyBrowserTestAssets(tmpDir); err != nil {
+		t.Fatalf("copy browser test assets: %v", err)
+	}
+	if err := writeBrowserProbeIndex(tmpDir); err != nil {
+		t.Fatalf("write browser probe index: %v", err)
+	}
+
+	server, url, err := serveBrowserTestDir(tmpDir)
+	if err != nil {
+		t.Fatalf("start browser test server: %v", err)
+	}
+	defer server.Shutdown(context.Background())
+
+	allocCtx, cancel := chromedp.NewExecAllocator(
+		context.Background(),
+		append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.Flag("headless", true),
+			chromedp.Flag("disable-gpu", true),
+			chromedp.Flag("incognito", true),
+			chromedp.Flag("no-sandbox", true),
+			chromedp.UserDataDir(t.TempDir()),
+		)...,
+	)
+	defer cancel()
+
+	isolatedCtx, cancel := chromedp.NewContext(allocCtx)
+	defer cancel()
+	isolatedCtx, cancel = context.WithTimeout(isolatedCtx, 60*time.Second)
+	defer cancel()
+
+	var result browserProbeResult
+	if err := chromedp.Run(isolatedCtx,
+		chromedp.Navigate(url),
+		chromedp.WaitReady("body"),
+		evaluateAwait(`window.openWasmsqliteProbe("/isolated-context.db", false)`, &result),
+	); err != nil {
+		t.Fatalf("open isolated-context db: %v", err)
+	}
+	if !result.OK && result.Error == "" {
+		t.Fatalf("isolated browser context failure is missing an actionable error: %+v", result)
+	}
+
+	var required browserProbeResult
+	if err := chromedp.Run(isolatedCtx,
+		evaluateAwait(`window.openWasmsqliteProbe("/isolated-context-required.db", true)`, &required),
+	); err != nil {
+		t.Fatalf("open isolated-context require-persistent db: %v", err)
+	}
+	if !required.OK && required.Error == "" {
+		t.Fatalf("isolated browser context require-persistent failure is missing an actionable error: %+v", required)
+	}
+}
+
+type browserProbeResult struct {
+	OK         bool   `json:"ok"`
+	Error      string `json:"error"`
+	VFSType    string `json:"vfsType"`
+	Persistent bool   `json:"persistent"`
+	Filename   string `json:"filename"`
+}
+
+func evaluateAwait(expression string, res any) chromedp.Action {
+	return chromedp.Evaluate(expression, res, func(p *cdpruntime.EvaluateParams) *cdpruntime.EvaluateParams {
+		return p.WithAwaitPromise(true)
+	})
+}
+
 func buildWASMTestBinary(destDir string) error {
 	out := filepath.Join(destDir, "driver.test.wasm")
 	cmd := exec.Command("go", "test", "-c", "-o", out, ".")
@@ -300,6 +437,41 @@ window.__wasmTestFailure = "";
     window.__wasmTestPassed = false;
   }
 })();
+</script>
+</body>
+</html>
+`
+	return os.WriteFile(filepath.Join(destDir, "index.html"), []byte(index), 0644)
+}
+
+func writeBrowserProbeIndex(destDir string) error {
+	const index = `<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>wasmsqlite browser probe</title></head>
+<body>
+<script src="sqlite-bridge.js"></script>
+<script>
+window.openWasmsqliteProbe = async (file, requirePersistent) => {
+  try {
+    const result = await window.sqliteBridge.open({
+      file,
+      vfs: "opfs",
+      busyTimeout: 1000,
+      requirePersistent: !!requirePersistent
+    });
+    return {
+      ok: true,
+      vfsType: result.vfsType,
+      persistent: !!result.persistent,
+      filename: result.filename
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error && (error.message || error.stack) || String(error)
+    };
+  }
+};
 </script>
 </body>
 </html>
