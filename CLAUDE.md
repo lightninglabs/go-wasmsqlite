@@ -1,4 +1,4 @@
-# Claude Developer Guide for go-sqlite3-wasm
+# Claude Developer Guide for go-wasmsqlite
 
 ## Project Overview
 WebAssembly SQLite driver for Go that enables database/sql code to run in browsers with OPFS persistence. Users can write standard Go database code that runs entirely client-side.
@@ -10,15 +10,14 @@ Go App (WASM) → Go Driver → JS Bridge → SQLite Worker → OPFS Storage
 
 ## Directory Structure
 ```
-go-sqlite3-wasm/
+go-wasmsqlite/
 ├── bridge/                 # JavaScript bridge between Go and SQLite WASM
-│   └── sqlite-bridge.js   # Handcrafted bridge file
+│   ├── sqlite-bridge.js   # Main-thread RPC bridge
+│   └── sqlite-worker.js   # Dedicated SQLite oo1 worker
 │
 ├── assets/                # SQLite WASM files (fetched from official source)
 │   ├── sqlite3.js
 │   ├── sqlite3.wasm
-│   ├── sqlite3-worker1.js
-│   ├── sqlite3-worker1-promiser.js
 │   └── sqlite3-opfs-async-proxy.js
 │
 ├── scripts/               # Build and utility scripts
@@ -45,8 +44,8 @@ go-sqlite3-wasm/
 ## Key Components
 
 ### 1. Bridge (`bridge/sqlite-bridge.js`)
-- **Purpose**: Handcrafted JavaScript bridge between Go and SQLite WASM
-- **Architecture**: Direct integration with SQLite WASM Worker API
+- **Purpose**: Main-thread RPC bridge between Go and a dedicated SQLite Worker
+- **Architecture**: `sqlite-worker.js` loads SQLite as a library and calls `sqlite3.oo1`
 - **No npm dependencies**: Simple, standalone JS file
 
 ### 2. Go Driver (`*.go`)
@@ -85,8 +84,9 @@ SQLite WASM assets are embedded in the Go module using `//go:embed`. Users can:
 
 ### Modify the Bridge
 1. Edit `bridge/sqlite-bridge.js`
-2. Run `make build`
-3. Test with `make serve`
+2. Edit `bridge/sqlite-worker.js` when changing SQLite runtime behavior
+3. Run `make build`
+4. Test with `make serve`
 
 ### Update SQLite Version
 1. Edit `SQLITE_VERSION` in `scripts/fetch-sqlite-wasm.sh`
@@ -102,18 +102,17 @@ SQLite WASM assets are embedded in the Go module using `//go:embed`. Users can:
 
 ### Debug Issues
 - Check browser console for JS errors
-- Look for `🔍` prefixed debug messages from bridge_adapter
+- Check JavaScript error details reported by `bridge_adapter.go`
 - Verify CORS headers are set (required for OPFS)
 - Check if running on HTTPS/localhost (required for OPFS)
 
 ## Important Notes
 
 ### Web Worker Architecture
-SQLite WASM uses Web Workers with these files:
-- `sqlite-bridge.js` - Our handcrafted bridge
+SQLite WASM uses these browser runtime files:
+- `sqlite-bridge.js` - Main-thread RPC bridge
 - `sqlite3.js` - Main SQLite JavaScript API
-- `sqlite3-worker1.js` - SQLite worker
-- `sqlite3-worker1-promiser.js` - Promise-based worker interface
+- `sqlite-worker.js` - Our dedicated worker using `sqlite3.oo1`
 - `sqlite3-opfs-async-proxy.js` - OPFS proxy worker
 - `sqlite3.wasm` - WebAssembly binary
 
@@ -147,7 +146,8 @@ Example uses database/sql code in `example/generated/`:
 - `example/main.wasm` depends on all Go source files
 - HTML expects these files in same directory:
   - `sqlite-bridge.js`
-  - `sqlite3.js`, `sqlite3-worker1.js`, `sqlite3-worker1-promiser.js`
+  - `sqlite-worker.js`
+  - `sqlite3.js`
   - `sqlite3-opfs-async-proxy.js`
   - `sqlite3.wasm`
   - `main.wasm`, `wasm_exec.js`
@@ -155,6 +155,6 @@ Example uses database/sql code in `example/generated/`:
 ## Gotchas
 - Don't try to bundle all JS into single file (Web Workers need separate files)
 - Bridge must be loaded before Go WASM tries to open database
-- Column name detection in bridge is heuristic-based (check `bridge/sqlite-bridge.js`)
+- Direct `sql.Open(...)` callers should call `db.SetMaxOpenConns(1)` for OPFS databases
 - Transaction isolation is limited by SQLite's capabilities in WASM
 - SHA3-256 verification requires `sha3sum` or `openssl` with SHA3 support

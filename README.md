@@ -1,447 +1,275 @@
-# go-sqlite3-wasm
+# go-wasmsqlite
 
-A WebAssembly SQLite driver for Go that enables database/sql code to run in the browser with OPFS persistence.
+A WebAssembly SQLite driver for Go. It lets browser-based Go WASM applications use the standard `database/sql` API with SQLite running entirely client-side and persisting to OPFS when the browser supports it.
+
+## Current Architecture
+
+The runtime uses SQLite's supported object-oriented WASM API directly. The deprecated SQLite Worker1/Promiser API is not used at runtime.
+
+```
+Go App (WASM)
+    -> database/sql driver ("wasmsqlite")
+    -> syscall/js adapter
+    -> sqlite-bridge.js RPC client on the main thread
+    -> sqlite-worker.js dedicated Worker
+    -> sqlite3.oo1.DB / sqlite3.oo1.OpfsDb
+    -> SQLite WASM + OPFS storage
+```
+
+`sqlite-worker.js` imports `sqlite3.js`, calls `sqlite3InitModule()`, opens databases with `sqlite3.oo1.OpfsDb` for the default `opfs` VFS, and falls back to `:memory:` if OPFS is unavailable. SQLite still runs in a Worker because OPFS requires worker-side file APIs.
 
 ## Features
 
-- 🚀 Run SQLite databases entirely in the browser
-- 💾 Persistent storage using OPFS (Origin Private File System)
-- 🔄 Full transaction support (BEGIN/COMMIT/ROLLBACK)
-- ⚡ Works with standard database/sql interface
-- 📦 **Embedded SQLite WASM assets** - everything included with `go get`
-- 🔍 VFS detection to know if using OPFS or in-memory storage
-- 💼 Database dump/load functionality for backups and migrations
-- 🏗️ Built-in Web Worker bridge for optimal performance
-- 🌐 Cross-Origin Isolation support for SharedArrayBuffer
+- Standard `database/sql` driver named `wasmsqlite`
+- OPFS persistence in supported browsers
+- In-memory fallback when OPFS is unavailable
+- Transactions through `BEGIN IMMEDIATE`, `COMMIT`, and `ROLLBACK`
+- BLOB round trips through `[]byte`
+- Database dump/load helpers with BLOB-safe SQL literals
+- Embedded SQLite WASM and bridge assets
+- Optional `golang-migrate` driver support
 
 ## Requirements
 
-- Go 1.19+ with WASM support
-- Modern browser with OPFS support (Chrome 102+, Firefox 111+, Safari 15.2+)
-- HTTPS or localhost for OPFS access
+- Go 1.24+ for this module
+- A modern browser with WebAssembly and OPFS support
+- HTTPS or localhost for OPFS
+- Cross-origin isolation for OPFS support:
+  - `Cross-Origin-Opener-Policy: same-origin`
+  - `Cross-Origin-Embedder-Policy: require-corp` or `credentialless`
+
+The example includes `enable-threads.js`, a service worker that adds these headers for static hosts such as GitHub Pages.
 
 ## Installation
 
 ```bash
-go get github.com/sputn1ck/go-sqlite3-wasm
+go get github.com/sputn1ck/go-wasmsqlite
 ```
-
-All SQLite WASM assets are embedded in the module - no additional downloads needed!
-
-## Quick Start
-
-```bash
-# Setup and build everything
-make setup
-make build
-
-# Run the demo
-make serve
-```
-
-Visit http://localhost:8081 to see the demo in action.
 
 ## Usage
+
+Use the driver through `database/sql`:
 
 ```go
 import (
     "database/sql"
-    _ "github.com/sputn1ck/go-sqlite3-wasm"
+
+    _ "github.com/sputn1ck/go-wasmsqlite"
 )
 
 func main() {
-    // Open database with OPFS persistence
-    db, err := sql.Open("wasmsqlite", "file=/myapp.db?vfs=opfs-sahpool")
+    db, err := sql.Open("wasmsqlite", "file=/myapp.db?vfs=opfs&busy_timeout=5000")
     if err != nil {
         panic(err)
     }
     defer db.Close()
-    
-    // Use with database/sql as normal
-    queries := database.New(db)
-    // ... your queries here
+
+    // Recommended for every OPFS database handle.
+    db.SetMaxOpenConns(1)
+
+    if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, body TEXT)`); err != nil {
+        panic(err)
+    }
 }
 ```
 
-## Project Structure
-
-```
-go-sqlite3-wasm/
-├── Makefile              # Build automation
-├── go.mod & go.sum      # Go module files
-├── *.go                 # Driver source files
-├── bridge/              # JavaScript bridge
-│   └── sqlite-bridge.js # Handcrafted bridge file
-├── assets/              # SQLite WASM files (fetched)
-│   ├── sqlite3.wasm
-│   ├── sqlite3.js
-│   ├── sqlite3-worker1.js
-│   ├── sqlite3-worker1-promiser.js
-│   └── sqlite3-opfs-async-proxy.js
-├── scripts/             # Build scripts
-│   └── fetch-sqlite-wasm.sh # Downloads SQLite WASM
-└── example/             # Demo application
-    ├── main.go          # Demo Go code
-    ├── index.html       # Demo UI
-    ├── server.js        # Dev server with CORS headers
-    └── generated/       # SQLC generated code
-```
-
-## Using Embedded Assets
-
-SQLite WASM assets (v3.50.4) are embedded in the module. You have several options for using them:
-
-### Option 1: Extract to Filesystem
+The convenience helper sets the OPFS connection limit for you:
 
 ```go
-import "github.com/sputn1ck/go-sqlite3-wasm"
+db, err := wasmsqlite.Open(&wasmsqlite.Options{
+    File: "/myapp.db",
+    VFS:  "opfs",
+})
+```
 
-// Extract all assets to a directory
+Direct `sql.Open(...)` callers should call `db.SetMaxOpenConns(1)` for each OPFS database. The worker rejects duplicate opens of the same OPFS filename in one worker, and multiple concurrent database handles are not useful for this browser storage model.
+
+## DSN Options
+
+- `file`: database filename, default `/app.db`
+- `vfs`: SQLite VFS, default `opfs`
+- `busy_timeout`: busy timeout in milliseconds, default `5000`
+- `mode`: SQLite URI mode such as `ro`, `rw`, `rwc`, or `memory`
+- `cache`: SQLite URI cache mode such as `shared` or `private`
+- `journal_mode`: runs `PRAGMA journal_mode=<value>` after open
+- `pragma`: semicolon-separated pragmas to run after open
+- `worker_url`: optional URL for `sqlite-worker.js`
+- `parse_time`: accepted for DSN compatibility
+
+Supported VFS values:
+
+- `opfs`: default persistent OPFS database via `sqlite3.oo1.OpfsDb`
+- `opfs-sahpool`: explicit SQLite SAH pool VFS when available
+- `memory`: in-memory database
+
+`file=:memory:` also opens an in-memory database.
+
+## Assets
+
+SQLite WASM assets are embedded with `//go:embed`. The runtime needs these files to be served from the same directory in a browser app:
+
+- `sqlite-bridge.js`
+- `sqlite-worker.js`
+- `sqlite3.js`
+- `sqlite3.wasm`
+- `sqlite3-opfs-async-proxy.js`
+- Go's `wasm_exec.js`
+- your Go WASM binary
+
+The upstream SQLite Worker1 files are intentionally not fetched or published because this project no longer loads them at runtime.
+
+### Extract Assets
+
+```go
 err := wasmsqlite.ExtractAssets("./static/wasm")
 if err != nil {
     log.Fatal(err)
 }
-
-// Now serve ./static/wasm with your web server
 ```
 
-### Option 2: Serve via HTTP Handler
+### Serve Assets
 
 ```go
-import "github.com/sputn1ck/go-sqlite3-wasm"
-
-// Create an asset handler with proper CORS headers
 handler := wasmsqlite.AssetHandler()
-
-// Serve on /wasm/ path
 http.Handle("/wasm/", http.StripPrefix("/wasm", handler))
-
-// Assets will be available at:
-// /wasm/assets/sqlite3.wasm
-// /wasm/assets/sqlite3.js
-// /wasm/assets/sqlite3-worker1.js
-// /wasm/assets/sqlite3-worker1-promiser.js
-// /wasm/assets/sqlite3-opfs-async-proxy.js
-// /wasm/bridge/sqlite-bridge.js
 ```
 
-### Option 3: Access Individual Assets
+Available paths include:
+
+```text
+/wasm/assets/sqlite3.wasm
+/wasm/assets/sqlite3.js
+/wasm/assets/sqlite3-opfs-async-proxy.js
+/wasm/bridge/sqlite-bridge.js
+/wasm/bridge/sqlite-worker.js
+```
+
+### Access Individual Assets
 
 ```go
-import "github.com/sputn1ck/go-sqlite3-wasm"
-
-// Get specific assets
 wasmBytes, _ := wasmsqlite.GetSQLiteWASM()
-jsCode, _ := wasmsqlite.GetSQLiteJS()
-bridgeCode, _ := wasmsqlite.GetBridgeJS()
-
-// List all available assets
-assets, _ := wasmsqlite.ListAssets()
-for _, asset := range assets {
-    fmt.Println(asset)
-}
+sqliteJS, _ := wasmsqlite.GetSQLiteJS()
+bridgeJS, _ := wasmsqlite.GetBridgeJS()
+workerJS, _ := wasmsqlite.GetWorkerJS()
 ```
 
-### 2. Build Your Application
+## Example App
+
+Build and serve the demo:
 
 ```bash
-# Build your Go WASM binary
-GOOS=js GOARCH=wasm go build -o web/main.wasm ./cmd/app
-
-# Copy Go's WASM support file
-cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" ./web/
+make build-example
+make serve
 ```
 
-### 3. Serve Files with Proper Headers
+Then open `http://localhost:8081`.
 
-For OPFS and SharedArrayBuffer support, serve with these headers:
+The example uses:
 
-```
-Cross-Origin-Embedder-Policy: require-corp
-Cross-Origin-Opener-Policy: same-origin
-```
+- `example/index.html`
+- `example/enable-threads.js` for static-host cross-origin isolation
+- `example/main.go` for the Go WASM app
+- `example/migrations/` with `golang-migrate`
+- generated `database/sql` query code in `example/generated/`
 
-## DSN Options
+`make build-example` copies the runtime browser files into `example/`, which is also what the GitHub Pages workflow publishes.
 
-- `file` - Database file path (default: `/app.db`)
-- `vfs` - Virtual file system (default: `opfs-sahpool`)
-  - `opfs-sahpool` - Persistent storage using OPFS with SharedArrayBuffer pool
-  - `opfs` - Standard OPFS storage
-  - `:memory:` - In-memory database (no persistence)
-- `busy_timeout` - Busy timeout in milliseconds (default: 5000)
-- `mode` - Access mode (`ro`, `rw`, `rwc`, `memory`)
-- `cache` - Cache mode (`shared`, `private`)
-
-Example with options:
-```go
-db, err := sql.Open("wasmsqlite", "file=/data.db?vfs=opfs-sahpool&busy_timeout=10000&mode=rwc")
-```
-
-## Advanced Features
-
-### Database Dump/Load
-
-Export and import entire databases as SQL:
+## Database Dump/Load
 
 ```go
-import wasmsqlite "github.com/sputn1ck/go-sqlite3-wasm"
-
-// Export database
 dump, err := wasmsqlite.DumpDatabase(db)
 if err != nil {
-    // handle error
+    return err
 }
-// Save dump to localStorage, send to server, etc.
 
-// Import database
-err = wasmsqlite.LoadDatabase(db, dump)
-if err != nil {
-    // handle error
+if err := wasmsqlite.LoadDatabase(db, dump); err != nil {
+    return err
 }
 ```
 
-### VFS Detection
+Dump output uses hex literals for BLOB values, so `[]byte` data can be restored safely.
 
-Check if database is using persistent storage:
+## VFS Detection
 
 ```go
-conn, _ := db.Conn(context.Background())
+conn, err := db.Conn(context.Background())
+if err != nil {
+    return err
+}
 defer conn.Close()
 
-var vfsType wasmsqlite.VFSType
-conn.Raw(func(driverConn interface{}) error {
-    c := driverConn.(*wasmsqlite.Conn)
-    vfsType = c.GetVFSType()
-    return nil
-})
+vfsType, err := wasmsqlite.GetVFSType(conn)
+if err != nil {
+    return err
+}
 
 switch vfsType {
 case wasmsqlite.VFSTypeOPFS:
-    // Using persistent OPFS storage
+    // Persistent OPFS storage.
 case wasmsqlite.VFSTypeMemory:
-    // Using in-memory storage
+    // In-memory storage.
 }
 ```
 
-## Browser Compatibility
+## Migrations
 
-| Browser | Minimum Version | OPFS Support |
-|---------|----------------|--------------|
-| Chrome  | 102+          | ✅ Full      |
-| Edge    | 102+          | ✅ Full      |
-| Firefox | 111+          | ✅ Full      |
-| Safari  | 15.2+         | ✅ Full      |
-
-## Database Migrations with golang-migrate
-
-go-sqlite3-wasm includes built-in support for [golang-migrate](https://github.com/golang-migrate/migrate), allowing you to manage database schema migrations in your WASM applications.
-
-### Using the MigrateDriver
+The package includes a `golang-migrate` database driver that runs migrations against an existing `*sql.DB`:
 
 ```go
-import (
-    "embed"
-    "database/sql"
-    "github.com/golang-migrate/migrate/v4"
-    "github.com/golang-migrate/migrate/v4/source/iofs"
-    wasmsqlite "github.com/sputn1ck/go-sqlite3-wasm"
-)
-
-//go:embed migrations/*.sql
-var migrationFS embed.FS
-
-func runMigrations(db *sql.DB) error {
-    // Create source from embedded filesystem
-    sourceDriver, err := iofs.New(migrationFS, "migrations")
-    if err != nil {
-        return err
-    }
-    
-    // Create the WASM SQLite migrate driver
-    dbDriver, err := wasmsqlite.NewMigrateDriver(db)
-    if err != nil {
-        return err
-    }
-    
-    // Create migrate instance
-    m, err := migrate.NewWithInstance("iofs", sourceDriver, "wasmsqlite", dbDriver)
-    if err != nil {
-        return err
-    }
-    
-    // Run migrations to latest version
-    return m.Up()
+sourceDriver, err := iofs.New(migrationFS, "migrations")
+if err != nil {
+    return err
 }
+
+dbDriver, err := wasmsqlite.NewMigrateDriver(db)
+if err != nil {
+    return err
+}
+
+m, err := migrate.NewWithInstance("iofs", sourceDriver, "wasmsqlite", dbDriver)
+if err != nil {
+    return err
+}
+
+return m.Up()
 ```
-
-### Migration Files
-
-Migration files follow the standard golang-migrate naming pattern:
-- `{version}_{description}.up.sql` - Apply migration
-- `{version}_{description}.down.sql` - Rollback migration
-
-Example:
-```
-migrations/
-├── 001_initial_schema.up.sql
-├── 001_initial_schema.down.sql
-├── 002_add_users_table.up.sql
-└── 002_add_users_table.down.sql
-```
-
-### MigrateDriver API
-
-The `MigrateDriver` implements the `database.Driver` interface from golang-migrate:
-
-```go
-// Create a new migrate driver
-driver, err := wasmsqlite.NewMigrateDriver(db)
-
-// Get current migration version
-version, dirty, err := driver.Version()
-
-// Set migration version
-err = driver.SetVersion(version, dirty)
-
-// Run a migration
-err = driver.Run(migrationReader)
-
-// Drop all tables
-err = driver.Drop()
-```
-
-### Features
-
-- **Automatic version tracking** - Migrations are tracked in a `schema_migrations` table
-- **Transaction support** - Each migration runs in a transaction for atomicity
-- **Dirty state handling** - Detects and handles failed migrations
-- **SQL statement splitting** - Correctly handles multi-statement migrations
-- **Embedded migrations** - Use `embed.FS` to bundle migrations in your WASM binary
 
 ## Development
 
-### Building from Source
-
-If you want to modify the embedded assets:
-
 ```bash
-# Fetch latest SQLite WASM
-make fetch-assets
-
-# Build everything
-make build
-
-# The assets in ./assets/ and ./bridge/ will be embedded
+make setup          # Fetch SQLite WASM assets
+make build          # Fetch assets, build root WASM, and build example
+make build-example  # Build only the demo app and copy browser runtime files
+make serve          # Serve demo at http://localhost:8081
+make test           # Run normal Go tests; browser tests are opt-in
+make browser-test   # Run headless Chrome browser E2E tests
+make clean          # Remove build artifacts
 ```
 
-### Running Tests
+Browser tests build a WASM test binary, serve the SQLite assets with the required headers, launch headless Chrome, and verify OPFS persistence, BLOBs, dump/load, transactions, memory mode, migrations, and the static Pages-style example path.
 
-```bash
-make test
-```
+## GitHub Pages
 
-### Development Mode
+The Pages workflow runs `make build-example` and publishes `./example`. The published directory must contain:
 
-```bash
-# Build and serve with auto-reload
-make dev
-```
+- `index.html`
+- `enable-threads.js`
+- `main.wasm`
+- `wasm_exec.js`
+- `sqlite-bridge.js`
+- `sqlite-worker.js`
+- `sqlite3.js`
+- `sqlite3.wasm`
+- `sqlite3-opfs-async-proxy.js`
 
-### Available Make Commands
-
-```bash
-make help              # Show all available commands
-make setup            # Initial setup (fetch SQLite WASM for development)
-make fetch-assets     # Download SQLite WASM from official source
-make build            # Build everything
-make build-wasm       # Build Go WASM only
-make serve            # Run demo server
-make test             # Run tests
-make clean            # Clean build artifacts
-```
-
-## Enable-Threads.js and OPFS Support
-
-The `example/enable-threads.js` file is a service worker that enables SharedArrayBuffer support in browsers. This is **required for OPFS (persistent storage) to work properly**.
-
-### Why is this needed?
-
-Modern browsers require specific Cross-Origin headers for SharedArrayBuffer:
-- `Cross-Origin-Embedder-Policy: require-corp` (or `credentialless`)
-- `Cross-Origin-Opener-Policy: same-origin`
-
-These headers enable the "cross-origin isolated" state required for:
-1. **SharedArrayBuffer** - Needed for SQLite's OPFS VFS
-2. **High-resolution timers** - Better performance measurements
-3. **Memory measurement** - Accurate memory usage reporting
-
-### How it works
-
-The service worker intercepts all requests and adds the required headers to responses. This allows OPFS to work even on development servers that don't set these headers.
-
-### Usage in your application
-
-```html
-<!-- Add this to your HTML before loading WASM -->
-<script src="enable-threads.js"></script>
-```
-
-### Alternative: Server-side headers
-
-If you control your server, you can set these headers directly instead of using the service worker:
-
-```go
-// Go example
-w.Header().Set("Cross-Origin-Embedder-Policy", "require-corp")
-w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
-```
-
-**Note**: Without these headers or the service worker, SQLite will fall back to in-memory storage (no persistence).
-
-## Architecture
-
-```
-┌─────────────────────────────────────────┐
-│         Go Application (WASM)           │
-│  ┌───────────────────────────────────┐  │
-│  │     SQLC Generated Code           │  │
-│  └───────────────────────────────────┘  │
-│  ┌───────────────────────────────────┐  │
-│  │     go-sqlite3-wasm Driver        │  │
-│  └───────────────────────────────────┘  │
-└─────────────────────────────────────────┘
-                    ↕
-┌─────────────────────────────────────────┐
-│   JavaScript Bridge (sqlite-bridge.js)  │
-└─────────────────────────────────────────┘
-                    ↕
-┌─────────────────────────────────────────┐
-│    SQLite Web Worker (Worker Thread)    │
-│  ┌───────────────────────────────────┐  │
-│  │  sqlite3-worker1-promiser.js      │  │
-│  └───────────────────────────────────┘  │
-│  ┌───────────────────────────────────┐  │
-│  │     SQLite WASM (sqlite3.wasm)    │  │
-│  └───────────────────────────────────┘  │
-└─────────────────────────────────────────┘
-                    ↕
-┌─────────────────────────────────────────┐
-│            OPFS Storage Layer           │
-│         (Persistent File System)        │
-└─────────────────────────────────────────┘
-```
+`enable-threads.js` is loaded before the Go WASM app. On static hosts without COOP/COEP response headers, it registers a service worker, reloads the page, and makes the page cross-origin isolated so OPFS can work.
 
 ## Limitations
 
-- SQLite extensions cannot be loaded dynamically
-- Performance is slower than native SQLite (but optimized with Web Workers)
-- OPFS storage is origin-scoped (per domain)
-- Requires secure context (HTTPS/localhost)
-- Cross-origin restrictions apply
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+- SQLite extensions cannot be loaded dynamically.
+- OPFS storage is origin-scoped.
+- OPFS requires HTTPS or localhost.
+- If OPFS is unavailable, `vfs=opfs` falls back to in-memory storage.
 
 ## License
 
@@ -449,6 +277,5 @@ MIT
 
 ## Acknowledgments
 
-- [SQLite](https://sqlite.org/) for the amazing database
-- [@sqlite.org/sqlite-wasm](https://sqlite.org/wasm) for the WebAssembly build
-- [database/sql](https://pkg.go.dev/database/sql) for the standard interface
+- [SQLite](https://sqlite.org/) for SQLite and the official WASM build
+- [database/sql](https://pkg.go.dev/database/sql) for the standard Go SQL API
