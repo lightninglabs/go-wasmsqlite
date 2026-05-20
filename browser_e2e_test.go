@@ -43,14 +43,7 @@ func TestBrowserE2E(t *testing.T) {
 	}
 	defer server.Shutdown(context.Background())
 
-	allocCtx, cancel := chromedp.NewExecAllocator(
-		context.Background(),
-		append(chromedp.DefaultExecAllocatorOptions[:],
-			chromedp.Flag("headless", true),
-			chromedp.Flag("disable-gpu", true),
-			chromedp.Flag("no-sandbox", true),
-		)...,
-	)
+	allocCtx, cancel := newBrowserAllocator()
 	defer cancel()
 
 	ctx, cancel := chromedp.NewContext(allocCtx)
@@ -106,14 +99,7 @@ func TestBrowserE2EExampleSmoke(t *testing.T) {
 	}
 	defer server.Shutdown(context.Background())
 
-	allocCtx, cancel := chromedp.NewExecAllocator(
-		context.Background(),
-		append(chromedp.DefaultExecAllocatorOptions[:],
-			chromedp.Flag("headless", true),
-			chromedp.Flag("disable-gpu", true),
-			chromedp.Flag("no-sandbox", true),
-		)...,
-	)
+	allocCtx, cancel := newBrowserAllocator()
 	defer cancel()
 
 	ctx, cancel := chromedp.NewContext(allocCtx)
@@ -163,14 +149,7 @@ func TestBrowserE2EPagesLikeSmoke(t *testing.T) {
 	}
 	defer server.Shutdown(context.Background())
 
-	allocCtx, cancel := chromedp.NewExecAllocator(
-		context.Background(),
-		append(chromedp.DefaultExecAllocatorOptions[:],
-			chromedp.Flag("headless", true),
-			chromedp.Flag("disable-gpu", true),
-			chromedp.Flag("no-sandbox", true),
-		)...,
-	)
+	allocCtx, cancel := newBrowserAllocator()
 	defer cancel()
 
 	ctx, cancel := chromedp.NewContext(allocCtx)
@@ -196,21 +175,25 @@ func TestBrowserE2EPagesLikeSmoke(t *testing.T) {
 	var ready bool
 	var isolated bool
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < 5; attempt++ {
 		ready = false
 		isolated = false
 		lastErr = chromedp.Run(ctx,
 			chromedp.Navigate(url),
 			chromedp.WaitReady("body"),
-			chromedp.Sleep(2*time.Second),
-			chromedp.Poll(`typeof window.runDemo === "function"`, &ready, chromedp.WithPollingInterval(250*time.Millisecond), chromedp.WithPollingTimeout(60*time.Second)),
+			chromedp.Poll(
+				`window.crossOriginIsolated === true && typeof window.runDemo === "function"`,
+				&ready,
+				chromedp.WithPollingInterval(250*time.Millisecond),
+				chromedp.WithPollingTimeout(30*time.Second),
+			),
 			chromedp.Evaluate(`window.crossOriginIsolated === true`, &isolated),
 		)
-		if lastErr == nil {
+		if lastErr == nil && ready && isolated {
 			break
 		}
-		if !strings.Contains(lastErr.Error(), "navigated") && !strings.Contains(lastErr.Error(), "closed") {
-			break
+		if attempt < 4 {
+			time.Sleep(500 * time.Millisecond)
 		}
 	}
 	if lastErr != nil {
@@ -243,14 +226,7 @@ func TestBrowserE2EMultiContextOPFS(t *testing.T) {
 	}
 	defer server.Shutdown(context.Background())
 
-	allocCtx, cancel := chromedp.NewExecAllocator(
-		context.Background(),
-		append(chromedp.DefaultExecAllocatorOptions[:],
-			chromedp.Flag("headless", true),
-			chromedp.Flag("disable-gpu", true),
-			chromedp.Flag("no-sandbox", true),
-		)...,
-	)
+	allocCtx, cancel := newBrowserAllocator()
 	defer cancel()
 
 	page1, cancel := chromedp.NewContext(allocCtx)
@@ -307,17 +283,19 @@ func TestBrowserE2EIsolatedBrowserContextOPFS(t *testing.T) {
 	}
 	defer server.Shutdown(context.Background())
 
-	allocCtx, cancel := chromedp.NewExecAllocator(
-		context.Background(),
-		append(chromedp.DefaultExecAllocatorOptions[:],
-			chromedp.Flag("headless", true),
-			chromedp.Flag("disable-gpu", true),
-			chromedp.Flag("incognito", true),
-			chromedp.Flag("no-sandbox", true),
-			chromedp.UserDataDir(t.TempDir()),
-		)...,
+	profileDir, err := os.MkdirTemp("", "wasmsqlite-chrome-profile-*")
+	if err != nil {
+		t.Fatalf("create chrome profile dir: %v", err)
+	}
+	allocCtx, cancel := newBrowserAllocator(
+		chromedp.Flag("incognito", true),
+		chromedp.UserDataDir(profileDir),
 	)
-	defer cancel()
+	defer func() {
+		cancel()
+		time.Sleep(250 * time.Millisecond)
+		_ = os.RemoveAll(profileDir)
+	}()
 
 	isolatedCtx, cancel := chromedp.NewContext(allocCtx)
 	defer cancel()
@@ -359,6 +337,24 @@ func evaluateAwait(expression string, res any) chromedp.Action {
 	return chromedp.Evaluate(expression, res, func(p *cdpruntime.EvaluateParams) *cdpruntime.EvaluateParams {
 		return p.WithAwaitPromise(true)
 	})
+}
+
+func newBrowserAllocator(extra ...chromedp.ExecAllocatorOption) (context.Context, context.CancelFunc) {
+	opts := append([]chromedp.ExecAllocatorOption{}, chromedp.DefaultExecAllocatorOptions[:]...)
+	opts = append(opts,
+		chromedp.Flag("headless", true),
+		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.Flag("no-first-run", true),
+		chromedp.Flag("no-sandbox", true),
+		chromedp.WSURLReadTimeout(60*time.Second),
+	)
+	if chromePath := os.Getenv("CHROME_PATH"); chromePath != "" {
+		opts = append(opts, chromedp.ExecPath(chromePath))
+	}
+	opts = append(opts, extra...)
+
+	return chromedp.NewExecAllocator(context.Background(), opts...)
 }
 
 func buildWASMTestBinary(destDir string) error {

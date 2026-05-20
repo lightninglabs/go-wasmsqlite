@@ -51,9 +51,14 @@ jobs:
           go-version-file: go.mod
 
       - name: Setup Chrome
-        uses: browser-actions/setup-chrome@v1
+        id: setup-chrome
+        uses: browser-actions/setup-chrome@v2
+        with:
+          chrome-version: stable
 
       - name: Run browser E2E tests
+        env:
+          CHROME_PATH: ${{ steps.setup-chrome.outputs.chrome-path }}
         run: make browser-test
 
   playwright-test:
