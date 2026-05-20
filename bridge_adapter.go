@@ -50,7 +50,7 @@ func (b *BridgeAdapter) Open(ctx context.Context, opts *Options) (string, error)
 	jsOpts.Set("mode", opts.Mode)
 	jsOpts.Set("cache", opts.Cache)
 	jsOpts.Set("journalMode", opts.JournalMode)
-	jsOpts.Set("requirePersistent", opts.RequirePersistent)
+	jsOpts.Set("requirePersistent", opts.RequirePersistent || opts.DisallowMemory)
 
 	pragmas := js.Global().Get("Array").New(len(opts.Pragma))
 	for i, pragma := range opts.Pragma {

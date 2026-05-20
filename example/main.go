@@ -94,7 +94,7 @@ func main() {
 func demoConfigFromLocation() demoDBConfig {
 	cfg := demoDBConfig{
 		File: "/demo.db",
-		VFS:  "opfs",
+		VFS:  "auto",
 	}
 
 	location := js.Global().Get("location")
@@ -141,24 +141,22 @@ func openDB(cfg demoDBConfig) (*sql.DB, error) {
 }
 
 func publishDemoRuntimeInfo(db *sql.DB, cfg demoDBConfig) {
-	vfsType := wasmsqlite.VFSTypeUnknown
-	conn, err := db.Conn(context.Background())
-	if err == nil {
-		defer conn.Close()
-		vfsType, err = wasmsqlite.GetVFSType(conn)
-	}
+	storageInfo, err := wasmsqlite.GetStorageInfoContext(context.Background(), db)
 	if err != nil {
 		fmt.Printf("⚠️  Failed to detect database VFS: %v\n", err)
+		storageInfo = wasmsqlite.StorageInfo{RequestedVFS: wasmsqlite.VFSType(cfg.VFS), VFSType: wasmsqlite.VFSTypeUnknown}
 	}
 
-	fmt.Printf("✅ Database VFS: %s\n", vfsType)
+	fmt.Printf("✅ Database VFS: %s\n", storageInfo.VFSType)
 
 	info := js.Global().Get("Object").New()
 	info.Set("configuredFile", cfg.File)
 	info.Set("configuredVFS", cfg.VFS)
 	info.Set("requirePersistent", cfg.RequirePersistent)
-	info.Set("vfsType", string(vfsType))
-	info.Set("persistent", vfsType != wasmsqlite.VFSTypeMemory && vfsType != wasmsqlite.VFSTypeUnknown)
+	info.Set("vfsType", string(storageInfo.VFSType))
+	info.Set("persistent", storageInfo.Persistent)
+	info.Set("opfs", storageInfo.OPFS)
+	info.Set("memory", storageInfo.Memory)
 	js.Global().Set("wasmsqliteDemoInfo", info)
 	eventInit := js.Global().Get("Object").New()
 	eventInit.Set("detail", info)

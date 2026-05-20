@@ -19,7 +19,8 @@ type Options struct {
 	// File path for the database (default: "/app.db")
 	File string
 
-	// VFS to use (default: "opfs")
+	// VFS to use (default: "auto", which tries opfs-wl, opfs-sahpool, opfs,
+	// then memory unless persistent storage is required).
 	VFS string
 
 	// Busy timeout in milliseconds (default: 5000)
@@ -35,6 +36,11 @@ type Options struct {
 
 	// Require OPFS/persistent storage instead of falling back to memory.
 	RequirePersistent bool
+
+	// DisallowMemory fails open instead of falling back to memory. It is an
+	// explicit alias for RequirePersistent for callers who care about storage
+	// durability rather than the exact persistence mechanism.
+	DisallowMemory bool
 
 	// Whether to parse time strings as time.Time (default: false).
 	ParseTime bool
@@ -56,7 +62,7 @@ type Options struct {
 func DefaultOptions() *Options {
 	return &Options{
 		File:        "/app.db",
-		VFS:         "opfs",
+		VFS:         "auto",
 		BusyTimeout: 5000,
 		ParseTime:   false,
 		WorkerURL:   "",
@@ -89,7 +95,7 @@ func buildDSN(opts *Options) string {
 		values.Set("file", opts.File)
 	}
 
-	if opts.VFS != "" && opts.VFS != "opfs" {
+	if opts.VFS != "" && opts.VFS != "auto" {
 		values.Set("vfs", opts.VFS)
 	}
 
@@ -107,6 +113,10 @@ func buildDSN(opts *Options) string {
 
 	if opts.RequirePersistent {
 		values.Set("require_persistent", "true")
+	}
+
+	if opts.DisallowMemory {
+		values.Set("disallow_memory", "true")
 	}
 
 	if opts.ParseTime {
@@ -187,6 +197,10 @@ func parseDSN(dsn string) (*Options, error) {
 
 	if requirePersistent := values.Get("require_persistent"); requirePersistent == "true" {
 		opts.RequirePersistent = true
+	}
+
+	if disallowMemory := values.Get("disallow_memory"); disallowMemory == "true" {
+		opts.DisallowMemory = true
 	}
 
 	if parseTime := values.Get("parse_time"); parseTime == "true" {

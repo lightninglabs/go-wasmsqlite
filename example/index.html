@@ -199,6 +199,8 @@
         </div>
         <div id="storageNote" class="storage-note">Waiting for the Go WASM database to open.</div>
         <div class="storage-links" id="storageLinks">
+            <a data-vfs="auto" data-db="/demo-auto.db" href="?vfs=auto&db=%2Fdemo-auto.db">Auto</a>
+            <a data-vfs="auto" data-db="/demo-auto-required.db" data-require="true" href="?vfs=auto&db=%2Fdemo-auto-required.db&require_persistent=true">Auto required</a>
             <a data-vfs="opfs" data-db="/demo-opfs.db" href="?vfs=opfs&db=%2Fdemo-opfs.db">OPFS</a>
             <a data-vfs="opfs" data-db="/demo-opfs-required.db" data-require="true" href="?vfs=opfs&db=%2Fdemo-opfs-required.db&require_persistent=true">OPFS required</a>
             <a data-vfs="opfs-wl" data-db="/demo-opfs-wl.db" data-require="true" href="?vfs=opfs-wl&db=%2Fdemo-opfs-wl.db&require_persistent=true">OPFS Web Locks</a>
@@ -314,7 +316,7 @@ Loading WebAssembly module...</div>
         }
 
         function renderStorageInfo(info) {
-            const requestedVFS = info?.configuredVFS || configuredValue("vfs", "opfs");
+            const requestedVFS = info?.configuredVFS || configuredValue("vfs", "auto");
             const activeVFS = info?.vfsType || "opening";
             const configuredFile = info?.configuredFile || configuredValue("db", "/demo.db");
             const persistent = !!info?.persistent;
@@ -337,6 +339,8 @@ Loading WebAssembly module...</div>
                 storageFields.storageNote.textContent = "Actually using SQLite's OPFS SAH pool VFS. This is useful to compare the explicit SAH pool path.";
             } else if (activeVFS === "opfs") {
                 storageFields.storageNote.textContent = "Actually using persistent OPFS.";
+            } else if (activeVFS === "auto" || activeVFS === "opening") {
+                storageFields.storageNote.textContent = "Trying OPFS Web Locks, then OPFS SAH pool, then OPFS before falling back to memory.";
             } else if (activeVFS === "unknown") {
                 storageFields.storageNote.textContent = "The database opened, but the demo could not determine the active VFS.";
             } else {

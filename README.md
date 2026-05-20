@@ -16,7 +16,7 @@ Go App (WASM)
     -> SQLite WASM + OPFS storage
 ```
 
-`sqlite-worker.js` imports `sqlite3.js`, calls `sqlite3InitModule()`, opens databases with `sqlite3.oo1.OpfsDb` for the default `opfs` VFS, and falls back to `:memory:` if OPFS is unavailable unless persistent storage is required. SQLite still runs in a Worker because OPFS requires worker-side file APIs.
+`sqlite-worker.js` imports `sqlite3.js`, calls `sqlite3InitModule()`, opens databases with an automatic OPFS preference order by default (`opfs-wl`, `opfs-sahpool`, then `opfs`), and falls back to `:memory:` only when memory fallback is allowed. SQLite still runs in a Worker because OPFS requires worker-side file APIs.
 
 ## Features
 
@@ -58,7 +58,7 @@ import (
 )
 
 func main() {
-    db, err := sql.Open("wasmsqlite", "file=/myapp.db?vfs=opfs&busy_timeout=5000")
+    db, err := sql.Open("wasmsqlite", "file=/myapp.db?vfs=auto&busy_timeout=5000")
     if err != nil {
         panic(err)
     }
@@ -77,9 +77,9 @@ The convenience helper sets the OPFS connection limit for you:
 
 ```go
 db, err := wasmsqlite.Open(&wasmsqlite.Options{
-    File:              "/myapp.db",
-    VFS:               "opfs",
-    RequirePersistent: true,
+    File:           "/myapp.db",
+    VFS:            "auto",
+    DisallowMemory: true,
 })
 ```
 
@@ -102,7 +102,7 @@ Do not mix positional and named parameters in one call.
 ## DSN Options
 
 - `file`: database filename, default `/app.db`
-- `vfs`: SQLite VFS, default `opfs`
+- `vfs`: SQLite VFS, default `auto`
 - `busy_timeout`: busy timeout in milliseconds, default `5000`
 - `mode`: SQLite URI mode such as `ro`, `rw`, `rwc`, or `memory`
 - `cache`: SQLite URI cache mode such as `shared` or `private`
@@ -111,13 +111,15 @@ Do not mix positional and named parameters in one call.
 - `worker_url`: optional URL for `sqlite-worker.js`
 - `sqlite_js_url`: optional URL for `sqlite3.js`, used by `sqlite-worker.js`
 - `require_persistent`: fail instead of falling back to memory when persistent storage is unavailable
+- `disallow_memory`: explicit alias for `require_persistent`; fail instead of falling back to memory
 - `parse_time`: parse SQLite timestamp strings into `time.Time` values for scans into `time.Time` or `sql.NullTime`
 
 `parse_time=true` recognizes `time.RFC3339Nano`, `time.RFC3339`, SQLite-style datetime strings with optional fractional seconds and numeric offsets, `YYYY-MM-DD HH:MM:SS`, and `YYYY-MM-DD`.
 
 Supported VFS values:
 
-- `opfs`: default persistent OPFS database via `sqlite3.oo1.OpfsDb`
+- `auto`: default; tries `opfs-wl`, then `opfs-sahpool`, then `opfs`, then memory if allowed
+- `opfs`: persistent OPFS database via `sqlite3.oo1.OpfsDb`; falls back to memory if unavailable and memory is allowed
 - `opfs-wl`: OPFS database using SQLite's Web Locks VFS for fairer multi-tab lock scheduling when the browser supports `Atomics.waitAsync`
 - `opfs-sahpool`: explicit SQLite SAH pool VFS when available
 - `memory`: in-memory database
@@ -269,18 +271,12 @@ Dump output uses hex literals for BLOB values, so `[]byte` data can be restored 
 ## VFS Detection
 
 ```go
-conn, err := db.Conn(context.Background())
-if err != nil {
-    return err
-}
-defer conn.Close()
-
-vfsType, err := wasmsqlite.GetVFSType(conn)
+storageInfo, err := wasmsqlite.GetStorageInfo(db)
 if err != nil {
     return err
 }
 
-switch vfsType {
+switch storageInfo.VFSType {
 case wasmsqlite.VFSTypeOPFS:
     // Persistent OPFS storage.
 case wasmsqlite.VFSTypeOPFSWebLocks:
@@ -292,17 +288,17 @@ case wasmsqlite.VFSTypeMemory:
 }
 ```
 
-Use `RequirePersistent: true` or `require_persistent=true` when falling back to memory would be incorrect.
+`GetVFSType(conn)` remains available when code already has a dedicated `*sql.Conn`. Use `DisallowMemory: true`, `RequirePersistent: true`, `disallow_memory=true`, or `require_persistent=true` when falling back to memory would be incorrect.
 
 ## Storage Behavior
 
 - One `*sql.DB` should own a given OPFS filename in a page. Use `SetMaxOpenConns(1)`.
 - Opening the same OPFS filename twice in the same Worker returns `ErrDuplicateOpen`.
 - Opening the same OPFS filename from two tabs uses separate Workers and browser OPFS locking. Browser behavior can differ; apps should handle either a successful second open or an actionable lock/open error.
+- Default `vfs=auto` tries `opfs-wl`, then `opfs-sahpool`, then `opfs`, then `memory` if fallback is allowed.
 - Use `vfs=opfs-wl` for multi-tab workloads where Web Locks support is available. It preserves OPFS persistence while letting the browser arbitrate lock acquisition more fairly across tabs.
 - Use `vfs=opfs-sahpool` for the explicit SQLite SAH pool VFS when single-tab performance is more important than transparent multi-tab access.
-- Private/incognito modes may expose reduced or temporary OPFS storage. Use `RequirePersistent` when data loss would be unacceptable.
-- Default `vfs=opfs` remains friendly for demos: if OPFS is unavailable, it falls back to `memory` and reports `VFSTypeMemory`.
+- Private/incognito modes may expose reduced or temporary OPFS storage. Use `DisallowMemory` or `RequirePersistent` when data loss would be unacceptable.
 
 ## Migrations
 
@@ -365,7 +361,7 @@ The Pages workflow runs `make build-example` and publishes `./example`. The publ
 - SQLite extensions cannot be loaded dynamically.
 - OPFS storage is origin-scoped.
 - OPFS requires HTTPS or localhost.
-- If OPFS is unavailable, `vfs=opfs` falls back to in-memory storage.
+- If OPFS is unavailable, `vfs=auto` and `vfs=opfs` fall back to in-memory storage unless memory fallback is disabled.
 - Context cancellation stops waiting on the Go side but does not interrupt already-running SQLite work in the Worker.
 - Named and positional parameters cannot be mixed in the same call.
 
@@ -375,9 +371,9 @@ The Pages workflow runs `make build-example` and publishes `./example`. The publ
 | --- | --- | --- |
 | `ErrBridgeNotLoaded` | `sqlite-bridge.js` was not loaded before `main.wasm` | Load `sqlite-bridge.js` before starting Go WASM. |
 | `ErrAssetUnavailable` | Worker cannot fetch `sqlite3.js`, `sqlite3.wasm`, or the OPFS proxy | Serve the flat runtime files together or set `worker_url` and `sqlite_js_url`. |
-| `ErrPersistentRequired` | `RequirePersistent` was set but OPFS/persistent storage is unavailable | Show a user-facing persistence error or run without `RequirePersistent` for demo mode. |
+| `ErrPersistentRequired` | `RequirePersistent` or `DisallowMemory` was set but OPFS/persistent storage is unavailable | Show a user-facing persistence error or allow memory fallback for demo mode. |
 | `ErrDuplicateOpen` | Same OPFS filename opened twice in one Worker | Use one `*sql.DB` per OPFS file and `SetMaxOpenConns(1)`. |
-| `ErrUnsupportedVFS` | Requested VFS is not available in the browser build | Use `opfs`, `opfs-sahpool`, or `memory`. |
+| `ErrUnsupportedVFS` | Requested VFS is not available in the browser build | Use `auto`, `opfs`, `opfs-wl`, `opfs-sahpool`, or `memory`. |
 | `ErrNamedParameter` | Mixed positional/named params, missing named param, or unused named param | Use all positional or all named params and match SQL names. |
 | `ErrProtocolMismatch` | Cached runtime JS files are from different versions | Redeploy `sqlite-bridge.js`, `sqlite-worker.js`, SQLite assets, and `main.wasm` together. |
 
@@ -388,7 +384,7 @@ The Pages workflow runs `make build-example` and publishes `./example`. The publ
 | Go | 1.24+ |
 | SQLite WASM | Official `sqlite-wasm` bundle, currently 3.53.1 / 3530100 |
 | Browser | Modern Chromium-class browsers with WebAssembly; OPFS requires secure context and cross-origin isolation |
-| VFS modes | `opfs`, `opfs-sahpool`, `memory` |
+| VFS modes | `auto`, `opfs-wl`, `opfs-sahpool`, `opfs`, `memory` |
 | SQL API | Go `database/sql`, positional and named parameters, transactions, BLOBs, `parse_time`, dump/load |
 | Unsupported | Dynamic SQLite extensions, forced interruption of already-running Worker SQL |
 

@@ -57,10 +57,11 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	}
 
 	conn := &Conn{
-		bridge:    bridge,
-		adapter:   adapter,
-		vfsType:   vfsType,
-		parseTime: opts.ParseTime,
+		bridge:       bridge,
+		adapter:      adapter,
+		requestedVFS: opts.VFS,
+		vfsType:      vfsType,
+		parseTime:    opts.ParseTime,
 	}
 
 	return conn, nil
@@ -73,11 +74,12 @@ func (c *Connector) Driver() driver.Driver {
 
 // Conn implements the database/sql/driver.Conn interface
 type Conn struct {
-	bridge    js.Value
-	adapter   *BridgeAdapter
-	inTx      bool
-	vfsType   string
-	parseTime bool
+	bridge       js.Value
+	adapter      *BridgeAdapter
+	inTx         bool
+	requestedVFS string
+	vfsType      string
+	parseTime    bool
 }
 
 // Prepare implements driver.Conn
@@ -254,6 +256,8 @@ func (r *Result) RowsAffected() (int64, error) {
 // GetVFSType returns the VFS type being used by the connection
 func (c *Conn) GetVFSType() VFSType {
 	switch c.vfsType {
+	case "auto":
+		return VFSTypeAuto
 	case "opfs":
 		return VFSTypeOPFS
 	case "opfs-wl":
@@ -264,6 +268,23 @@ func (c *Conn) GetVFSType() VFSType {
 		return VFSTypeMemory
 	default:
 		return VFSTypeUnknown
+	}
+}
+
+// StorageInfo returns the storage backend selected by the browser.
+func (c *Conn) StorageInfo() StorageInfo {
+	vfsType := c.GetVFSType()
+	requestedVFS := VFSType(c.requestedVFS)
+	if requestedVFS == "" {
+		requestedVFS = VFSTypeAuto
+	}
+
+	return StorageInfo{
+		RequestedVFS: requestedVFS,
+		VFSType:      vfsType,
+		Persistent:   vfsType != VFSTypeMemory && vfsType != VFSTypeUnknown,
+		Memory:       vfsType == VFSTypeMemory,
+		OPFS:         vfsType == VFSTypeOPFS || vfsType == VFSTypeOPFSWebLocks || vfsType == VFSTypeOPFSSAHPool,
 	}
 }
 

@@ -1,6 +1,6 @@
 const { test, expect } = require("@playwright/test");
 
-test("example page runs Go WASM against opfs-wl and exposes SQLite worker capabilities", async ({ page }) => {
+test("example page resolves auto storage and exposes SQLite worker capabilities", async ({ page }) => {
   const suffix = `${Date.now()}-${test.info().workerIndex}`;
   const appDb = `/playwright-go-${suffix}.db`;
   const bridgeDb = `/playwright-js-${suffix}.db`;
@@ -8,7 +8,7 @@ test("example page runs Go WASM against opfs-wl and exposes SQLite worker capabi
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
 
-  await page.goto(`/?vfs=opfs-wl&db=${encodeURIComponent(appDb)}&require_persistent=true`);
+  await page.goto(`/?vfs=auto&db=${encodeURIComponent(appDb)}&require_persistent=true`);
 
   await expect(page.locator("#status")).toContainText("WebAssembly loaded successfully", {
     timeout: 60000
@@ -17,19 +17,21 @@ test("example page runs Go WASM against opfs-wl and exposes SQLite worker capabi
     timeout: 60000
   });
   await expect(page.locator("#activeVFS")).toHaveText("opfs-wl");
-  await expect(page.locator("#requestedVFS")).toHaveText("opfs-wl");
+  await expect(page.locator("#requestedVFS")).toHaveText("auto");
   await expect(page.locator("#persistentStatus")).toHaveText("yes");
   await expect(page.locator("#databaseFile")).toHaveText(appDb);
   await expect(page.locator("#isolationStatus")).toHaveText("yes");
   await expect(page.locator("#atomicsStatus")).toHaveText("yes");
   await expect(page.locator("#storageNote")).toContainText("OPFS Web Locks");
   await expect(page.locator('#storageLinks a[data-vfs="opfs-wl"]')).toHaveClass(/active/);
+  await expect(page.getByRole("link", { name: "Auto", exact: true })).not.toHaveClass(/active/);
+  await expect(page.getByRole("link", { name: "Auto required" })).not.toHaveClass(/active/);
   await expect(page.locator('#storageLinks a[data-vfs="memory"]')).toHaveAttribute("href", "?vfs=memory&db=%3Amemory%3A");
 
   const runtimeInfo = await page.evaluate(() => window.wasmsqliteDemoInfo);
   expect(runtimeInfo).toMatchObject({
     configuredFile: appDb,
-    configuredVFS: "opfs-wl",
+    configuredVFS: "auto",
     requirePersistent: true,
     vfsType: "opfs-wl",
     persistent: true

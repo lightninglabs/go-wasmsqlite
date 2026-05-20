@@ -68,6 +68,46 @@ func TestBrowserDriverOPFSE2E(t *testing.T) {
 	}
 }
 
+func TestBrowserDriverAutoVFSE2E(t *testing.T) {
+	filename := fmt.Sprintf("/browser-auto-%d.db", time.Now().UnixNano())
+	db, err := Open(&Options{File: filename, VFS: "auto", DisallowMemory: true, BusyTimeout: 5000})
+	if err != nil {
+		t.Fatalf("open auto db handle: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.PingContext(context.Background()); err != nil {
+		t.Fatalf("ping auto db: %v", err)
+	}
+
+	info, err := GetStorageInfo(db)
+	if err != nil {
+		t.Fatalf("get auto storage info: %v", err)
+	}
+	if info.RequestedVFS != VFSTypeAuto {
+		t.Fatalf("expected requested auto VFS, got %s", info.RequestedVFS)
+	}
+	if !info.OPFS || !info.Persistent || info.Memory {
+		t.Fatalf("expected persistent OPFS storage info, got %+v", info)
+	}
+	switch info.VFSType {
+	case VFSTypeOPFSWebLocks, VFSTypeOPFSSAHPool, VFSTypeOPFS:
+	default:
+		t.Fatalf("expected auto to resolve to OPFS VFS, got %+v", info)
+	}
+
+	if _, err := db.Exec(`CREATE TABLE auto_values (id INTEGER PRIMARY KEY, label TEXT); INSERT INTO auto_values(label) VALUES ('ok');`); err != nil {
+		t.Fatalf("exec auto SQL: %v", err)
+	}
+	var label string
+	if err := db.QueryRow(`SELECT label FROM auto_values WHERE id = 1`).Scan(&label); err != nil {
+		t.Fatalf("query auto row: %v", err)
+	}
+	if label != "ok" {
+		t.Fatalf("unexpected auto label: %q", label)
+	}
+}
+
 func TestBrowserDriverMemoryE2E(t *testing.T) {
 	db, err := Open(&Options{File: ":memory:", VFS: "memory"})
 	if err != nil {
