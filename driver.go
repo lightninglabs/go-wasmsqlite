@@ -256,6 +256,10 @@ func (c *Conn) GetVFSType() VFSType {
 	switch c.vfsType {
 	case "opfs":
 		return VFSTypeOPFS
+	case "opfs-wl":
+		return VFSTypeOPFSWebLocks
+	case "opfs-sahpool":
+		return VFSTypeOPFSSAHPool
 	case "memory":
 		return VFSTypeMemory
 	default:

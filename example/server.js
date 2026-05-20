@@ -19,7 +19,8 @@ const server = http.createServer((req, res) => {
   res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
   res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
   
-  let filePath = '.' + req.url;
+  const requestURL = new URL(req.url, `http://${req.headers.host}`);
+  let filePath = '.' + decodeURIComponent(requestURL.pathname);
   if (filePath === './') {
     filePath = './index.html';
   }

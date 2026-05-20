@@ -8,6 +8,8 @@ import (
 	"embed"
 	"fmt"
 	"log"
+	"net/url"
+	"strings"
 	"syscall/js"
 
 	"github.com/golang-migrate/migrate/v4"
@@ -24,12 +26,19 @@ var (
 	queries *database.Queries
 )
 
+type demoDBConfig struct {
+	File              string
+	VFS               string
+	RequirePersistent bool
+}
+
 func main() {
 	fmt.Println("🚀 Starting go-wasmsqlite demo with golang-migrate...")
 
 	// Initialize database connection once
 	var err error
-	db, err = openDB()
+	cfg := demoConfigFromLocation()
+	db, err = openDB(cfg)
 	if err != nil {
 		log.Fatalf("❌ Failed to open database: %v", err)
 	}
@@ -43,6 +52,7 @@ func main() {
 
 	queries = database.New(db)
 	fmt.Println("✅ Database initialized!")
+	publishDemoRuntimeInfo(db, cfg)
 
 	// Set up global functions for JavaScript to call
 	js.Global().Set("runDemo", js.FuncOf(runDemo))
@@ -81,15 +91,75 @@ func main() {
 	select {}
 }
 
-func openDB() (*sql.DB, error) {
-	// Try to open database - the Worker will handle VFS fallback
-	db, err := sql.Open("wasmsqlite", "file=/demo.db?vfs=opfs&busy_timeout=5000&parse_time=true")
+func demoConfigFromLocation() demoDBConfig {
+	cfg := demoDBConfig{
+		File: "/demo.db",
+		VFS:  "opfs",
+	}
+
+	location := js.Global().Get("location")
+	if location.IsUndefined() {
+		return cfg
+	}
+
+	query, err := url.ParseQuery(strings.TrimPrefix(location.Get("search").String(), "?"))
+	if err != nil {
+		fmt.Printf("⚠️  Ignoring invalid URL query config: %v\n", err)
+		return cfg
+	}
+
+	if file := query.Get("db"); file != "" {
+		cfg.File = file
+	}
+	if vfs := query.Get("vfs"); vfs != "" {
+		cfg.VFS = vfs
+	}
+	cfg.RequirePersistent = query.Get("require_persistent") == "true"
+
+	return cfg
+}
+
+func openDB(cfg demoDBConfig) (*sql.DB, error) {
+	values := url.Values{}
+	values.Set("file", cfg.File)
+	values.Set("vfs", cfg.VFS)
+	values.Set("busy_timeout", "5000")
+	values.Set("parse_time", "true")
+	if cfg.RequirePersistent {
+		values.Set("require_persistent", "true")
+	}
+
+	fmt.Printf("🔧 Opening database %s with VFS %s\n", cfg.File, cfg.VFS)
+
+	db, err := sql.Open("wasmsqlite", values.Encode())
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 	db.SetMaxOpenConns(1)
 
 	return db, nil
+}
+
+func publishDemoRuntimeInfo(db *sql.DB, cfg demoDBConfig) {
+	vfsType := wasmsqlite.VFSTypeUnknown
+	conn, err := db.Conn(context.Background())
+	if err == nil {
+		defer conn.Close()
+		vfsType, err = wasmsqlite.GetVFSType(conn)
+	}
+	if err != nil {
+		fmt.Printf("⚠️  Failed to detect database VFS: %v\n", err)
+	}
+
+	fmt.Printf("✅ Database VFS: %s\n", vfsType)
+
+	info := js.Global().Get("Object").New()
+	info.Set("configuredFile", cfg.File)
+	info.Set("configuredVFS", cfg.VFS)
+	info.Set("requirePersistent", cfg.RequirePersistent)
+	info.Set("vfsType", string(vfsType))
+	info.Set("persistent", vfsType != wasmsqlite.VFSTypeMemory && vfsType != wasmsqlite.VFSTypeUnknown)
+	js.Global().Set("wasmsqliteDemoInfo", info)
 }
 
 func runMigrations(db *sql.DB) error {

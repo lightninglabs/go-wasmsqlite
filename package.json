@@ -1,0 +1,14 @@
+{
+  "name": "go-wasmsqlite",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "test": "playwright test",
+    "test:playwright": "playwright test",
+    "serve:example": "make build-example && cd example && node server.js",
+    "playwright:install": "playwright install chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.53.0"
+  }
+}

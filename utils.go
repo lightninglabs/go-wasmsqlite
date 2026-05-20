@@ -13,9 +13,11 @@ import (
 type VFSType string
 
 const (
-	VFSTypeOPFS    VFSType = "opfs"
-	VFSTypeMemory  VFSType = "memory"
-	VFSTypeUnknown VFSType = "unknown"
+	VFSTypeOPFS         VFSType = "opfs"
+	VFSTypeOPFSWebLocks VFSType = "opfs-wl"
+	VFSTypeOPFSSAHPool  VFSType = "opfs-sahpool"
+	VFSTypeMemory       VFSType = "memory"
+	VFSTypeUnknown      VFSType = "unknown"
 )
 
 // GetVFSType returns the type of VFS being used by the connection

@@ -391,6 +391,52 @@ func TestBrowserUnsupportedVFSE2E(t *testing.T) {
 	}
 }
 
+func TestBrowserDriverOPFSWebLocksE2E(t *testing.T) {
+	filename := fmt.Sprintf("/browser-opfs-wl-%d.db", time.Now().UnixNano())
+	db, err := Open(&Options{File: filename, VFS: "opfs-wl", RequirePersistent: true, BusyTimeout: 5000})
+	if err != nil {
+		t.Fatalf("open opfs-wl db handle: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.PingContext(context.Background()); err != nil {
+		if errors.Is(err, ErrUnsupportedVFS) || strings.Contains(err.Error(), "Atomics.waitAsync") {
+			t.Skipf("opfs-wl is not available in this browser: %v", err)
+		}
+		t.Fatalf("ping opfs-wl db: %v", err)
+	}
+
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("get opfs-wl conn: %v", err)
+	}
+
+	vfs, err := GetVFSType(conn)
+	conn.Close()
+	if err != nil {
+		t.Fatalf("get opfs-wl vfs type: %v", err)
+	}
+	if vfs != VFSTypeOPFSWebLocks {
+		t.Fatalf("expected opfs-wl VFS, got %s", vfs)
+	}
+
+	if _, err := db.Exec(`
+CREATE TABLE IF NOT EXISTS wl_values (id INTEGER PRIMARY KEY, label TEXT);
+INSERT INTO wl_values(label) VALUES ('ok');
+UPDATE wl_values SET label = 'done' WHERE id = 1;
+`); err != nil {
+		t.Fatalf("exec opfs-wl SQL: %v", err)
+	}
+
+	var label string
+	if err := db.QueryRow(`SELECT label FROM wl_values WHERE id = 1`).Scan(&label); err != nil {
+		t.Fatalf("query opfs-wl row: %v", err)
+	}
+	if label != "done" {
+		t.Fatalf("unexpected opfs-wl label: %q", label)
+	}
+}
+
 func TestBrowserDriverSAHPoolE2E(t *testing.T) {
 	filename := fmt.Sprintf("/browser-sahpool-%d.db", time.Now().UnixNano())
 	db, err := Open(&Options{File: filename, VFS: "opfs-sahpool", BusyTimeout: 5000})

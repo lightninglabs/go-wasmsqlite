@@ -1,4 +1,4 @@
-.PHONY: all build clean test browser-test serve help build-wasm build-example setup fetch-assets
+.PHONY: all build clean test browser-test playwright-test serve help build-wasm build-example setup fetch-assets
 
 # Default target
 all: build
@@ -52,6 +52,10 @@ browser-test: build-example
 	@echo "🌐 Running browser E2E tests..."
 	WASM_BROWSER_TEST=1 go test -run TestBrowserE2E ./...
 
+playwright-test:
+	@echo "🎭 Running Playwright browser tests..."
+	npm test
+
 # Clean build artifacts
 clean:
 	@echo "🧹 Cleaning build artifacts..."
@@ -91,6 +95,7 @@ help:
 	@echo "  make serve        - Build and serve the demo locally"
 	@echo "  make test         - Run tests"
 	@echo "  make browser-test - Run headless Chrome browser E2E tests"
+	@echo "  make playwright-test - Run Playwright browser tests against the example page"
 	@echo "  make clean        - Clean build artifacts"
 	@echo "  make check        - Check requirements"
 	@echo "  make help         - Show this help"

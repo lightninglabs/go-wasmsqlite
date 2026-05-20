@@ -298,10 +298,10 @@ async function open(args) {
     if (!hasVFS(requestedVFS)) {
       throw new Error(`requested SQLite VFS is unavailable: ${requestedVFS}`);
     }
-    if (requestedVFS === "opfs-sahpool") {
+    if (requestedVFS.startsWith("opfs")) {
       filename = normalizeOPFSFilename(filename);
     }
-    const resolved = makeURI(filename, { ...uriParams, vfs: requestedVFS });
+    const resolved = makeURI(filename, uriParams);
     const duplicateKey = requestedVFS.startsWith("opfs") ? `${requestedVFS}:${resolved}` : "";
     if (duplicateKey && openOPFSFiles.has(duplicateKey)) {
       throw new Error(`OPFS database already open in this worker: ${resolved}`);

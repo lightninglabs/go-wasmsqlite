@@ -118,6 +118,7 @@ Do not mix positional and named parameters in one call.
 Supported VFS values:
 
 - `opfs`: default persistent OPFS database via `sqlite3.oo1.OpfsDb`
+- `opfs-wl`: OPFS database using SQLite's Web Locks VFS for fairer multi-tab lock scheduling when the browser supports `Atomics.waitAsync`
 - `opfs-sahpool`: explicit SQLite SAH pool VFS when available
 - `memory`: in-memory database
 
@@ -282,6 +283,10 @@ if err != nil {
 switch vfsType {
 case wasmsqlite.VFSTypeOPFS:
     // Persistent OPFS storage.
+case wasmsqlite.VFSTypeOPFSWebLocks:
+    // Persistent OPFS storage using SQLite's Web Locks VFS.
+case wasmsqlite.VFSTypeOPFSSAHPool:
+    // Persistent OPFS storage using SQLite's SAH pool VFS.
 case wasmsqlite.VFSTypeMemory:
     // In-memory storage; data will reset on refresh.
 }
@@ -294,6 +299,8 @@ Use `RequirePersistent: true` or `require_persistent=true` when falling back to 
 - One `*sql.DB` should own a given OPFS filename in a page. Use `SetMaxOpenConns(1)`.
 - Opening the same OPFS filename twice in the same Worker returns `ErrDuplicateOpen`.
 - Opening the same OPFS filename from two tabs uses separate Workers and browser OPFS locking. Browser behavior can differ; apps should handle either a successful second open or an actionable lock/open error.
+- Use `vfs=opfs-wl` for multi-tab workloads where Web Locks support is available. It preserves OPFS persistence while letting the browser arbitrate lock acquisition more fairly across tabs.
+- Use `vfs=opfs-sahpool` for the explicit SQLite SAH pool VFS when single-tab performance is more important than transparent multi-tab access.
 - Private/incognito modes may expose reduced or temporary OPFS storage. Use `RequirePersistent` when data loss would be unacceptable.
 - Default `vfs=opfs` remains friendly for demos: if OPFS is unavailable, it falls back to `memory` and reports `VFSTypeMemory`.
 
@@ -329,6 +336,7 @@ make build-example  # Build only the demo app and copy browser runtime files
 make serve          # Serve demo at http://localhost:8081
 make test           # Run normal Go tests
 make browser-test   # Run headless Chrome browser E2E tests
+npm test            # Run Playwright tests against the built example page
 make clean          # Remove build artifacts
 ```
 
