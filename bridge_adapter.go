@@ -113,6 +113,41 @@ func (b *BridgeAdapter) Exec(ctx context.Context, sql string, params []driver.Na
 	return rowsAffected, lastInsertId, nil
 }
 
+// ExecBatch executes one SQL statement repeatedly in the SQLite worker.
+func (b *BridgeAdapter) ExecBatch(ctx context.Context, sql string, rows [][]driver.NamedValue) (int, int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	execBatchMethod := b.bridge.Get("execBatch")
+	if execBatchMethod.IsUndefined() {
+		return 0, 0, fmt.Errorf("sqliteBridge.execBatch method not found")
+	}
+
+	jsRows, err := b.toJSBatchParams(rows)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	result, err := b.callAsyncContext(ctx, execBatchMethod, b.dbID, sql, jsRows)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	rowsAffected := 0
+	lastInsertId := 0
+
+	if !result.IsUndefined() {
+		if !result.Get("rowsAffected").IsUndefined() {
+			rowsAffected = result.Get("rowsAffected").Int()
+		}
+		if !result.Get("lastInsertId").IsUndefined() {
+			lastInsertId = result.Get("lastInsertId").Int()
+		}
+	}
+
+	return rowsAffected, lastInsertId, nil
+}
+
 // Query executes a query and returns results
 func (b *BridgeAdapter) Query(ctx context.Context, sql string, params []driver.NamedValue) ([]string, [][]interface{}, error) {
 	b.mu.Lock()
@@ -457,6 +492,18 @@ func (b *BridgeAdapter) toJSParams(args []driver.NamedValue) (js.Value, error) {
 		jsParams.SetIndex(i, b.toJSValue(arg.Value))
 	}
 	return jsParams, nil
+}
+
+func (b *BridgeAdapter) toJSBatchParams(rows [][]driver.NamedValue) (js.Value, error) {
+	jsRows := js.Global().Get("Array").New(len(rows))
+	for i, row := range rows {
+		jsRow, err := b.toJSParams(row)
+		if err != nil {
+			return js.Undefined(), fmt.Errorf("batch row %d: %w", i+1, err)
+		}
+		jsRows.SetIndex(i, jsRow)
+	}
+	return jsRows, nil
 }
 
 func classifyBridgeError(message string) error {

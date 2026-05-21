@@ -70,10 +70,11 @@ func TestBrowserE2E(t *testing.T) {
 	var passed bool
 	var done bool
 	var failure string
+	timeout := browserTestTimeout(90 * time.Second)
 	if err := chromedp.Run(ctx,
 		chromedp.Navigate(url),
 		chromedp.WaitReady("body"),
-		chromedp.Poll(`window.__wasmTestDone === true`, &done, chromedp.WithPollingInterval(250*time.Millisecond), chromedp.WithPollingTimeout(90*time.Second)),
+		chromedp.Poll(`window.__wasmTestDone === true`, &done, chromedp.WithPollingInterval(250*time.Millisecond), chromedp.WithPollingTimeout(timeout)),
 		chromedp.Evaluate(`window.__wasmTestPassed === true`, &passed),
 		chromedp.Evaluate(`window.__wasmTestFailure || ""`, &failure),
 	); err != nil {
@@ -82,6 +83,9 @@ func TestBrowserE2E(t *testing.T) {
 
 	if !done || !passed {
 		t.Fatalf("browser wasm tests failed: %s\nconsole:\n%s", failure, strings.Join(consoleLines, "\n"))
+	}
+	if testing.Verbose() && len(consoleLines) > 0 {
+		t.Logf("browser console:\n%s", strings.Join(consoleLines, "\n"))
 	}
 }
 
@@ -357,6 +361,18 @@ func newBrowserAllocator(extra ...chromedp.ExecAllocatorOption) (context.Context
 	return chromedp.NewExecAllocator(context.Background(), opts...)
 }
 
+func browserTestTimeout(defaultTimeout time.Duration) time.Duration {
+	raw := os.Getenv("WASMSQLITE_BROWSER_TEST_TIMEOUT")
+	if raw == "" {
+		return defaultTimeout
+	}
+	timeout, err := time.ParseDuration(raw)
+	if err != nil {
+		return defaultTimeout
+	}
+	return timeout
+}
+
 func buildWASMTestBinary(destDir string) error {
 	out := filepath.Join(destDir, "driver.test.wasm")
 	cmd := exec.Command("go", "test", "-c", "-o", out, ".")
@@ -424,6 +440,9 @@ window.__wasmTestFailure = "";
 (async () => {
   try {
     const go = new Go();
+    go.env = {
+      WASMSQLITE_HUGE_BATCH_TEST: new URLSearchParams(window.location.search).get("hugeBatch") || ""
+    };
     const result = await WebAssembly.instantiateStreaming(fetch("driver.test.wasm"), go.importObject);
     await go.run(result.instance);
   } catch (error) {
@@ -507,5 +526,9 @@ func serveBrowserTestDirWithHeaders(dir string, crossOriginHeaders bool) (*http.
 		}
 	}()
 
-	return server, "http://" + listener.Addr().String() + "/", nil
+	url := "http://" + listener.Addr().String() + "/"
+	if os.Getenv("WASMSQLITE_HUGE_BATCH_TEST") == "1" {
+		url += "?hugeBatch=1"
+	}
+	return server, url, nil
 }

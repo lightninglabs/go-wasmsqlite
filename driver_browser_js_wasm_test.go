@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"strings"
 	"syscall/js"
 	"testing"
@@ -213,6 +214,329 @@ func TestBrowserNamedParametersE2E(t *testing.T) {
 	})
 	if !errors.Is(err, ErrNamedParameter) {
 		t.Fatalf("expected ErrNamedParameter for mixed params, got %v", err)
+	}
+}
+
+func TestBrowserExecBatchE2E(t *testing.T) {
+	db, err := Open(&Options{File: ":memory:", VFS: "memory"})
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`CREATE TABLE batch_values (
+		id INTEGER PRIMARY KEY,
+		label TEXT NOT NULL,
+		payload BLOB
+	)`); err != nil {
+		t.Fatalf("create batch schema: %v", err)
+	}
+
+	result, err := ExecBatchContext(context.Background(), db,
+		`INSERT INTO batch_values(id, label, payload) VALUES (?, ?, ?)`,
+		[][]any{
+			{int64(1), "first", []byte{0x01, 0x02}},
+			{int64(2), "second", nil},
+			{int64(3), "third", []byte{}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("exec batch insert: %v", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		t.Fatalf("batch rows affected: %v", err)
+	}
+	if rowsAffected != 3 {
+		t.Fatalf("expected 3 rows affected, got %d", rowsAffected)
+	}
+
+	lastInsertID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("batch last insert id: %v", err)
+	}
+	if lastInsertID != 3 {
+		t.Fatalf("expected last insert id 3, got %d", lastInsertID)
+	}
+
+	var (
+		count  int
+		label  string
+		data   []byte
+		isNull bool
+	)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM batch_values`).Scan(&count); err != nil {
+		t.Fatalf("count batch rows: %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("expected 3 batch rows, got %d", count)
+	}
+	if err := db.QueryRow(`SELECT label, payload FROM batch_values WHERE id = 1`).Scan(&label, &data); err != nil {
+		t.Fatalf("query first batch row: %v", err)
+	}
+	if label != "first" || !bytes.Equal(data, []byte{0x01, 0x02}) {
+		t.Fatalf("unexpected first batch row: label=%q data=%x", label, data)
+	}
+	if err := db.QueryRow(`SELECT payload IS NULL FROM batch_values WHERE id = 2`).Scan(&isNull); err != nil {
+		t.Fatalf("query nil batch payload: %v", err)
+	}
+	if !isNull {
+		t.Fatal("nil batch payload should bind as NULL")
+	}
+	if err := db.QueryRow(`SELECT payload FROM batch_values WHERE id = 3`).Scan(&data); err != nil {
+		t.Fatalf("query empty batch payload: %v", err)
+	}
+	if data == nil || len(data) != 0 {
+		t.Fatalf("empty batch payload mismatch: %v", data)
+	}
+
+	emptyResult, err := ExecBatchContext(context.Background(), db,
+		`INSERT INTO batch_values(id, label) VALUES (?, ?)`,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("exec empty batch: %v", err)
+	}
+	rowsAffected, err = emptyResult.RowsAffected()
+	if err != nil {
+		t.Fatalf("empty batch rows affected: %v", err)
+	}
+	if rowsAffected != 0 {
+		t.Fatalf("expected empty batch to affect 0 rows, got %d", rowsAffected)
+	}
+}
+
+func TestBrowserExecBatchRollbackOnErrorE2E(t *testing.T) {
+	db, err := Open(&Options{File: ":memory:", VFS: "memory"})
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`CREATE TABLE batch_unique (
+		id INTEGER PRIMARY KEY,
+		label TEXT NOT NULL UNIQUE
+	)`); err != nil {
+		t.Fatalf("create unique batch schema: %v", err)
+	}
+
+	_, err = ExecBatchContext(context.Background(), db,
+		`INSERT INTO batch_unique(id, label) VALUES (?, ?)`,
+		[][]any{
+			{int64(10), "dup"},
+			{int64(11), "dup"},
+		},
+	)
+	if err == nil {
+		t.Fatal("expected duplicate batch insert to fail")
+	}
+
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM batch_unique`).Scan(&count); err != nil {
+		t.Fatalf("count rows after failed batch: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("failed batch should have rolled back all rows, got count=%d", count)
+	}
+
+	if _, err := ExecBatchContext(context.Background(), db,
+		`INSERT INTO batch_unique(id, label) VALUES (?, ?)`,
+		[][]any{{int64(12), "ok"}},
+	); err != nil {
+		t.Fatalf("exec batch after rollback: %v", err)
+	}
+}
+
+func TestBrowserExecBatchLargeE2E(t *testing.T) {
+	db, err := Open(&Options{File: ":memory:", VFS: "memory"})
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`CREATE TABLE batch_large (
+		id INTEGER PRIMARY KEY,
+		label TEXT NOT NULL,
+		score INTEGER NOT NULL
+	)`); err != nil {
+		t.Fatalf("create large batch schema: %v", err)
+	}
+
+	const batchSize = 10_000
+	rows := make([][]any, batchSize)
+	var wantSum int64
+	for i := 0; i < batchSize; i++ {
+		id := int64(i + 1)
+		score := id * 3
+		rows[i] = []any{id, fmt.Sprintf("label-%05d", id), score}
+		wantSum += score
+	}
+
+	start := time.Now()
+	result, err := ExecBatchContext(context.Background(), db,
+		`INSERT INTO batch_large(id, label, score) VALUES (?, ?, ?)`,
+		rows,
+	)
+	if err != nil {
+		t.Fatalf("exec large batch insert: %v", err)
+	}
+	t.Logf("inserted %d rows with ExecBatch in %s", batchSize, time.Since(start))
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		t.Fatalf("large batch rows affected: %v", err)
+	}
+	if rowsAffected != batchSize {
+		t.Fatalf("expected %d rows affected, got %d", batchSize, rowsAffected)
+	}
+
+	lastInsertID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("large batch last insert id: %v", err)
+	}
+	if lastInsertID != batchSize {
+		t.Fatalf("expected last insert id %d, got %d", batchSize, lastInsertID)
+	}
+
+	var (
+		count    int
+		sumScore int64
+		first    string
+		last     string
+	)
+	if err := db.QueryRow(`
+SELECT COUNT(*), SUM(score), MIN(label), MAX(label)
+FROM batch_large
+`).Scan(&count, &sumScore, &first, &last); err != nil {
+		t.Fatalf("query large batch aggregate: %v", err)
+	}
+	if count != batchSize || sumScore != wantSum ||
+		first != "label-00001" || last != "label-10000" {
+		t.Fatalf(
+			"large batch mismatch: count=%d sum=%d first=%q last=%q",
+			count, sumScore, first, last,
+		)
+	}
+}
+
+func TestBrowserExecBatchHugeBlobE2E(t *testing.T) {
+	if os.Getenv("WASMSQLITE_HUGE_BATCH_TEST") != "1" {
+		t.Skip("set WASMSQLITE_HUGE_BATCH_TEST=1 to run huge batch stress test")
+	}
+
+	db, err := Open(&Options{File: ":memory:", VFS: "memory"})
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`CREATE TABLE batch_huge_blob (
+		id INTEGER PRIMARY KEY,
+		b0 BLOB NOT NULL,
+		b1 BLOB NOT NULL,
+		b2 BLOB NOT NULL,
+		b3 BLOB NOT NULL,
+		b4 BLOB NOT NULL,
+		b5 BLOB NOT NULL,
+		b6 BLOB NOT NULL,
+		b7 BLOB NOT NULL,
+		b8 BLOB NOT NULL,
+		b9 BLOB NOT NULL
+	)`); err != nil {
+		t.Fatalf("create huge blob batch schema: %v", err)
+	}
+
+	const (
+		batchSize  = 100_000
+		blobSize   = 256
+		blobCols   = 10
+		rawPayload = batchSize * blobCols * blobSize
+	)
+
+	blob := make([]byte, blobSize)
+	for i := range blob {
+		blob[i] = byte((i * 31) % 251)
+	}
+
+	rows := make([][]any, batchSize)
+	for i := 0; i < batchSize; i++ {
+		id := int64(i + 1)
+		rows[i] = []any{
+			id,
+			blob,
+			blob,
+			blob,
+			blob,
+			blob,
+			blob,
+			blob,
+			blob,
+			blob,
+			blob,
+		}
+	}
+
+	start := time.Now()
+	result, err := ExecBatchContext(context.Background(), db, `
+INSERT INTO batch_huge_blob (
+	id, b0, b1, b2, b3, b4, b5, b6, b7, b8, b9
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, rows)
+	if err != nil {
+		t.Fatalf("exec huge blob batch insert (%d raw bytes): %v", rawPayload, err)
+	}
+	js.Global().Get("console").Call(
+		"log",
+		fmt.Sprintf(
+			"huge ExecBatch inserted %d rows x %d blob columns x %d bytes (%d raw bytes) in %s",
+			batchSize, blobCols, blobSize, rawPayload, time.Since(start),
+		),
+	)
+	t.Logf(
+		"inserted %d rows x %d blob columns x %d bytes (%d raw bytes) in %s",
+		batchSize, blobCols, blobSize, rawPayload, time.Since(start),
+	)
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		t.Fatalf("huge blob batch rows affected: %v", err)
+	}
+	if rowsAffected != batchSize {
+		t.Fatalf("expected %d rows affected, got %d", batchSize, rowsAffected)
+	}
+
+	lastInsertID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("huge blob batch last insert id: %v", err)
+	}
+	if lastInsertID != batchSize {
+		t.Fatalf("expected last insert id %d, got %d", batchSize, lastInsertID)
+	}
+
+	var (
+		count        int
+		totalB0Bytes int64
+		totalB9Bytes int64
+		firstB0      []byte
+		lastB9       []byte
+	)
+	if err := db.QueryRow(`
+SELECT COUNT(*), SUM(length(b0)), SUM(length(b9)),
+       (SELECT b0 FROM batch_huge_blob WHERE id = 1),
+       (SELECT b9 FROM batch_huge_blob WHERE id = 100000)
+FROM batch_huge_blob
+`).Scan(&count, &totalB0Bytes, &totalB9Bytes, &firstB0, &lastB9); err != nil {
+		t.Fatalf("query huge blob batch aggregate: %v", err)
+	}
+	if count != batchSize ||
+		totalB0Bytes != int64(batchSize*blobSize) ||
+		totalB9Bytes != int64(batchSize*blobSize) ||
+		!bytes.Equal(firstB0, blob) ||
+		!bytes.Equal(lastB9, blob) {
+		t.Fatalf(
+			"huge blob batch mismatch: count=%d b0bytes=%d b9bytes=%d first=%d last=%d",
+			count, totalB0Bytes, totalB9Bytes, len(firstB0), len(lastB9),
+		)
 	}
 }
 

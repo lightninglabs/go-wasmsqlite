@@ -151,6 +151,30 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	}, nil
 }
 
+// ExecBatchContext executes query once for each args row in a single worker
+// request. The worker wraps the batch in one SQLite transaction.
+func (c *Conn) ExecBatchContext(ctx context.Context, query string, rows [][]driver.NamedValue) (driver.Result, error) {
+	if c.adapter == nil {
+		return nil, driver.ErrBadConn
+	}
+
+	if c.inTx {
+		return nil, fmt.Errorf("batch execution owns its transaction and cannot run inside an active transaction")
+	}
+
+	rowsAffected, lastInsertID, err := c.adapter.ExecBatch(ctx, query, rows)
+	if err != nil {
+		return nil, err
+	}
+
+	rowsAff := int64(rowsAffected)
+	lastInsID := int64(lastInsertID)
+	return &Result{
+		rowsAffected: &rowsAff,
+		lastInsertID: &lastInsID,
+	}, nil
+}
+
 // QueryContext implements driver.QueryerContext
 func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	if c.adapter == nil {

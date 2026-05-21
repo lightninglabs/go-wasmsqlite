@@ -94,6 +94,16 @@
       return { ok: true, ...result };
     },
 
+    async execBatch(dbId, sql, paramRows = [], options = {}) {
+      const result = await request("execBatch", {
+        dbId,
+        sql,
+        paramRows,
+        transaction: options.transaction !== false
+      });
+      return { ok: true, ...result };
+    },
+
     async query(dbId, sql, params = []) {
       const result = await request("query", { dbId, sql, params });
       return {

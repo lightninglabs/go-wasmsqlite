@@ -5,6 +5,7 @@ package wasmsqlite
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
 	"time"
 )
@@ -99,6 +100,63 @@ func GetStorageInfoContext(ctx context.Context, db *sql.DB) (StorageInfo, error)
 	}
 
 	return info, nil
+}
+
+// ExecBatch executes query once for each positional argument row in one worker
+// request. The SQLite worker wraps the batch in a single transaction and
+// prepares the statement once for the whole batch.
+func ExecBatch(db *sql.DB, query string, rows [][]any) (sql.Result, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	return ExecBatchContext(ctx, db, query, rows)
+}
+
+// ExecBatchContext executes query once for each positional argument row in one
+// worker request while respecting the provided context. Context cancellation
+// stops waiting on the Go side; it does not interrupt a batch already posted to
+// the SQLite worker.
+func ExecBatchContext(ctx context.Context, db *sql.DB, query string, rows [][]any) (sql.Result, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get connection: %w", err)
+	}
+	defer conn.Close()
+
+	batchRows := make([][]driver.NamedValue, len(rows))
+	for i, row := range rows {
+		batchRows[i] = make([]driver.NamedValue, len(row))
+		for j, value := range row {
+			batchRows[i][j] = driver.NamedValue{
+				Ordinal: j + 1,
+				Value:   value,
+			}
+		}
+	}
+
+	var result sql.Result
+	err = conn.Raw(func(driverConn interface{}) error {
+		c, ok := driverConn.(*Conn)
+		if !ok {
+			return fmt.Errorf("not a wasmsqlite connection")
+		}
+
+		res, err := c.ExecBatchContext(ctx, query, batchRows)
+		if err != nil {
+			return err
+		}
+		result = res
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute batch: %w", err)
+	}
+
+	return result, nil
 }
 
 // DumpDatabase exports the entire database as SQL statements

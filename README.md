@@ -97,6 +97,31 @@ _, err := db.Exec(
 
 Do not mix positional and named parameters in one call.
 
+For high-throughput inserts or updates, use the explicit batch helper. It sends
+one worker request, prepares the SQL once in the SQLite worker, wraps the whole
+batch in one transaction, and binds/steps/resets the statement for each row:
+
+```go
+result, err := wasmsqlite.ExecBatchContext(ctx, db,
+    `INSERT INTO notes(id, body) VALUES (?, ?)`,
+    [][]any{
+        {1, "hello"},
+        {2, "world"},
+    },
+)
+if err != nil {
+    panic(err)
+}
+
+rows, _ := result.RowsAffected()
+fmt.Println(rows)
+```
+
+`ExecBatchContext` is intentionally separate from `database/sql` prepared
+statements. Normal `Stmt.Exec` calls still execute immediately so per-call
+errors, row counts, and read-your-writes behavior remain consistent with
+`database/sql`.
+
 `ExecContext`, `QueryContext`, `BeginTx`, `Ping`, dump, and load respect context cancellation while waiting for the JavaScript bridge. Canceling a Go context stops waiting on the Go side; it does not forcibly interrupt a SQLite operation that has already been posted to the Worker.
 
 ## DSN Options

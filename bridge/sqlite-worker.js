@@ -255,6 +255,56 @@ function runExec(db, sql, params) {
   };
 }
 
+function runExecBatch(db, sql, paramRows, options = {}) {
+  if (!Array.isArray(paramRows)) {
+    throw new Error("batch parameter rows must be an array");
+  }
+
+  if (paramRows.length === 0) {
+    return {
+      rowsAffected: 0,
+      lastInsertId: Number(sqlite3.capi.sqlite3_last_insert_rowid(db.pointer)),
+      batchCount: 0
+    };
+  }
+
+  const beforeChanges = db.changes(true);
+  const useTransaction = options.transaction !== false;
+  let stmt;
+  let committed = false;
+
+  try {
+    if (useTransaction) db.exec("BEGIN IMMEDIATE");
+
+    stmt = db.prepare(sql);
+    for (const params of paramRows) {
+      bindParams(stmt, params || []);
+      while (stmt.step()) {}
+      stmt.reset(true);
+    }
+
+    if (useTransaction) {
+      db.exec("COMMIT");
+      committed = true;
+    }
+
+    return {
+      rowsAffected: db.changes(true) - beforeChanges,
+      lastInsertId: Number(sqlite3.capi.sqlite3_last_insert_rowid(db.pointer)),
+      batchCount: paramRows.length
+    };
+  } catch (error) {
+    if (useTransaction && !committed) {
+      try {
+        db.exec("ROLLBACK");
+      } catch (_) {}
+    }
+    throw error;
+  } finally {
+    if (stmt) stmt.finalize();
+  }
+}
+
 async function init(args = {}) {
   if (args.expectedBridgeProtocolVersion && args.expectedBridgeProtocolVersion !== workerProtocolVersion) {
     throw new Error(`SQLite bridge protocol mismatch: expected ${workerProtocolVersion}, got ${args.expectedBridgeProtocolVersion}`);
@@ -371,6 +421,13 @@ async function exec(args) {
   return runExec(db, args.sql, args.params || []);
 }
 
+async function execBatch(args) {
+  const db = getDB(args.dbId);
+  return runExecBatch(db, args.sql, args.paramRows || [], {
+    transaction: args.transaction !== false
+  });
+}
+
 async function query(args) {
   const db = getDB(args.dbId);
   return runQuery(db, args.sql, args.params || []);
@@ -454,7 +511,7 @@ async function load(args) {
   return {};
 }
 
-const methods = { init, open, exec, query, begin, commit, rollback, close, dump, load };
+const methods = { init, open, exec, execBatch, query, begin, commit, rollback, close, dump, load };
 
 globalThis.onmessage = async (event) => {
   const message = event.data || {};
