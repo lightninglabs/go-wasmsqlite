@@ -324,6 +324,86 @@ RETURNING id, mailbox_id, lease_token, lease_until, attempts;`
 	}
 }
 
+// TestBrowserExecNumberedParamsOutOfOrderE2E exercises the database/sql exec
+// path (ExecContext, no RETURNING) with positional $N placeholders whose
+// numbers appear out of textual order: the SET clause references $3/$4 before
+// the WHERE clause references $1/$2. The driver passes these as a positional
+// array, which must be remapped to SQLite parameter slots BY NUMBER. A
+// regression binds the WHERE keys against the SET values, so the statement
+// matches no rows and silently updates nothing. This mirrors the sqlc :exec
+// UPDATEs emitted for the PostgreSQL engine (e.g. UpdateVTXOStatus) that run
+// against this driver in the browser. It complements
+// TestBrowserUpdateReturningWithNumberedParamsAndSubqueryE2E, which only
+// covers the query (RETURNING) path.
+func TestBrowserExecNumberedParamsOutOfOrderE2E(t *testing.T) {
+	db, err := Open(&Options{File: ":memory:", VFS: "memory"})
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`
+CREATE TABLE vtxos (
+	outpoint_hash    TEXT NOT NULL,
+	outpoint_index   INTEGER NOT NULL,
+	status           INTEGER NOT NULL,
+	last_update_time TEXT NOT NULL,
+	PRIMARY KEY (outpoint_hash, outpoint_index)
+);`); err != nil {
+		t.Fatalf("create vtxos schema: %v", err)
+	}
+
+	if _, err := db.Exec(
+		`INSERT INTO vtxos (outpoint_hash, outpoint_index, status, last_update_time)
+		 VALUES (?, ?, ?, ?)`,
+		"abcd", 0, 0, "2026-06-17T00:00:00Z",
+	); err != nil {
+		t.Fatalf("seed vtxo row: %v", err)
+	}
+
+	// SET references $3,$4 before WHERE references $1,$2 -- the exact shape that
+	// mis-binds when a positional array is bound by appearance order instead of
+	// by number.
+	const updateStatus = `
+UPDATE vtxos
+SET status = $3,
+    last_update_time = $4
+WHERE outpoint_hash = $1 AND outpoint_index = $2`
+
+	res, err := db.Exec(updateStatus, "abcd", 0, 4, "2026-06-17T01:00:00Z")
+	if err != nil {
+		t.Fatalf("exec out-of-order update: %v", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		t.Fatalf("rows affected: %v", err)
+	}
+	if affected != 1 {
+		t.Fatalf(
+			"expected 1 row updated, got %d: positional $N mis-bound on the exec path",
+			affected,
+		)
+	}
+
+	var (
+		status     int
+		lastUpdate string
+	)
+	if err := db.QueryRow(
+		`SELECT status, last_update_time FROM vtxos
+		 WHERE outpoint_hash = ? AND outpoint_index = ?`,
+		"abcd", 0,
+	).Scan(&status, &lastUpdate); err != nil {
+		t.Fatalf("read back vtxo row: %v", err)
+	}
+	if status != 4 || lastUpdate != "2026-06-17T01:00:00Z" {
+		t.Fatalf(
+			"unexpected row after update: status=%d last_update_time=%q",
+			status, lastUpdate,
+		)
+	}
+}
+
 func TestBrowserProtocolMetadataE2E(t *testing.T) {
 	bridgeProtocol := js.Global().Get("sqliteBridge").Get("protocolVersion")
 	if bridgeProtocol.IsUndefined() {
