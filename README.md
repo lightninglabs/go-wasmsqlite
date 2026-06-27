@@ -382,14 +382,29 @@ The Pages workflow runs `make build-example` and publishes `./example`. The publ
 
 `enable-threads.js` is loaded before the Go WASM app. On static hosts without COOP/COEP response headers, it registers a service worker, reloads the page, and makes the page cross-origin isolated so OPFS can work.
 
-## Netlify
+## Deployment
 
-The CI workflow deploys `./example` to `go-wasmsqlite-demo` after compile, browser, and Playwright jobs pass on `main`. Netlify applies `example/_headers` to static assets, so the deployed demo receives real COOP/COEP/CORP headers instead of relying on the service-worker header shim.
+The public demo is intended to be served from `https://lightning.community/go-wasmsqlite/`.
 
-Repository secrets required for deployment:
+The host in front of the built `./example` directory must set the OPFS headers
+on every response:
 
-- `NETLIFY_AUTH_TOKEN`: Netlify personal access token with deploy access to the site.
-- `NETLIFY_SITE_ID`: Netlify site id for the demo site.
+```text
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+Cross-Origin-Resource-Policy: same-origin
+```
+
+It must also serve `*.wasm` as `application/wasm`. The repository keeps
+`example/_headers` for static hosts that understand that file format, but
+GitHub Pages does not apply `_headers`; the `lightning.community` route should
+therefore terminate on a header-capable edge/proxy or the reusable Lightning
+Labs WASM static server.
+
+If the route is proxied through Cloudflare, avoid TLS/proxy settings that make
+the origin redirect back to the same HTTPS URL. A same-location `301` on
+`/go-wasmsqlite/` happens before the app loads, so it cannot be fixed by the
+service-worker header shim.
 
 ## Limitations
 
