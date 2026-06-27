@@ -14,8 +14,8 @@ import (
 
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
-	wasmsqlite "github.com/sputn1ck/go-wasmsqlite"
-	database "github.com/sputn1ck/go-wasmsqlite/example/generated"
+	wasmsqlite "github.com/lightninglabs/go-wasmsqlite"
+	database "github.com/lightninglabs/go-wasmsqlite/example/generated"
 )
 
 //go:embed migrations/*.sql

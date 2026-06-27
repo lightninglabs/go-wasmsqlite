@@ -43,7 +43,7 @@ The example includes `enable-threads.js`, a service worker that adds these heade
 ## Installation
 
 ```bash
-go get github.com/sputn1ck/go-wasmsqlite
+go get github.com/lightninglabs/go-wasmsqlite
 ```
 
 ## Usage
@@ -54,7 +54,7 @@ Use the driver through `database/sql`:
 import (
     "database/sql"
 
-    _ "github.com/sputn1ck/go-wasmsqlite"
+    _ "github.com/lightninglabs/go-wasmsqlite"
 )
 
 func main() {
@@ -235,7 +235,7 @@ import (
     "log"
     "net/http"
 
-    "github.com/sputn1ck/go-wasmsqlite"
+    "github.com/lightninglabs/go-wasmsqlite"
 )
 
 func main() {
