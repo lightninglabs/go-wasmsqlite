@@ -20,7 +20,7 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	migratetesting "github.com/golang-migrate/migrate/v4/database/testing"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
-	database "github.com/sputn1ck/go-wasmsqlite/example/generated"
+	database "github.com/lightninglabs/go-wasmsqlite/example/generated"
 )
 
 //go:embed example/migrations/*.sql
