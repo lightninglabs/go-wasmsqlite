@@ -235,7 +235,17 @@ function runQuery(db, sql, params) {
 
 function runExec(db, sql, params) {
   const beforeChanges = db.changes(true);
-  if (params && !Array.isArray(params) && Object.keys(params).length) {
+  // Route any non-empty params (positional array OR named object) through
+  // bindParams, exactly like runQuery. bindParams sends positional arrays to
+  // normalizePositionalParams, which remaps each $N to its slot BY NUMBER.
+  // db.exec({ bind: [...] }) would instead bind the array by SQLite slot order
+  // (i.e. order of first appearance), silently mis-binding any statement whose
+  // $N are out of textual order -- e.g. UPDATE ... SET col = $3 WHERE k = $1
+  // binds k against the value meant for col and matches zero rows. Only the
+  // empty-params case falls through to db.exec.
+  const hasParams =
+    params && (Array.isArray(params) ? params.length : Object.keys(params).length);
+  if (hasParams) {
     const stmt = db.prepare(sql);
     try {
       bindParams(stmt, params);
@@ -244,9 +254,7 @@ function runExec(db, sql, params) {
       stmt.finalize();
     }
   } else {
-    const options = { sql };
-    if (params && params.length) options.bind = params.map(normalizeValue);
-    db.exec(options);
+    db.exec({ sql });
   }
 
   return {
