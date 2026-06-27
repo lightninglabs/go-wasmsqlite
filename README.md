@@ -38,7 +38,7 @@ Go App (WASM)
   - `Cross-Origin-Opener-Policy: same-origin`
   - `Cross-Origin-Embedder-Policy: require-corp` or `credentialless`
 
-The example includes `enable-threads.js`, a service worker that adds these headers for static hosts such as GitHub Pages.
+The example must be served by a host that sets these headers on the page and runtime assets.
 
 ## Installation
 
@@ -271,7 +271,6 @@ Then open `http://localhost:8081`.
 The example uses:
 
 - `example/index.html`
-- `example/enable-threads.js` for static-host cross-origin isolation
 - `example/main.go` for the Go WASM app
 - `example/migrations/` with `golang-migrate`
 - generated `database/sql` query code in `example/generated/`
@@ -363,14 +362,13 @@ make clean          # Remove build artifacts
 
 `make fetch-assets` reads the official SQLite download metadata and fetches the current `sqlite-wasm-*.zip` bundle with SHA3 verification. To pin a specific archive, pass `SQLITE_URL` and `EXPECTED_SHA`; `SQLITE_VERSION=3530100 make fetch-assets` selects that version when it is still listed on the download page.
 
-Browser tests build a WASM test binary, serve the SQLite assets with the required headers, launch headless Chrome, and verify OPFS persistence, BLOBs, dump/load, transactions, memory mode, migrations, generated SQL shapes, cancellation, named parameters, browser-context storage behavior, and the static Pages-style example path. CI runs these browser tests on every push and pull request.
+Browser tests build a WASM test binary, serve the SQLite assets with the required headers, launch headless Chrome, and verify OPFS persistence, BLOBs, dump/load, transactions, memory mode, migrations, generated SQL shapes, cancellation, named parameters, browser-context storage behavior, and the example path. CI runs these browser tests on every push and pull request.
 
 ## GitHub Pages
 
 The Pages workflow runs `make build-example` and publishes `./example`. The published directory must contain:
 
 - `index.html`
-- `enable-threads.js`
 - `_headers`
 - `main.wasm`
 - `wasm_exec.js`
@@ -380,16 +378,30 @@ The Pages workflow runs `make build-example` and publishes `./example`. The publ
 - `sqlite3.wasm`
 - `sqlite3-opfs-async-proxy.js`
 
-`enable-threads.js` is loaded before the Go WASM app. On static hosts without COOP/COEP response headers, it registers a service worker, reloads the page, and makes the page cross-origin isolated so OPFS can work.
+GitHub Pages does not apply `_headers`, so this workflow is only useful as a static artifact publisher. The public `lightning.community` route must add the required headers before serving these files.
 
-## Netlify
+## Deployment
 
-The CI workflow deploys `./example` to `go-wasmsqlite-demo` after compile, browser, and Playwright jobs pass on `main`. Netlify applies `example/_headers` to static assets, so the deployed demo receives real COOP/COEP/CORP headers instead of relying on the service-worker header shim.
+The public demo is intended to be served from `https://lightning.community/go-wasmsqlite/`.
 
-Repository secrets required for deployment:
+The host in front of the built `./example` directory must set the OPFS headers
+on every response:
 
-- `NETLIFY_AUTH_TOKEN`: Netlify personal access token with deploy access to the site.
-- `NETLIFY_SITE_ID`: Netlify site id for the demo site.
+```text
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+Cross-Origin-Resource-Policy: same-origin
+```
+
+It must also serve `*.wasm` as `application/wasm`. The repository keeps
+`example/_headers` for static hosts that understand that file format, but
+GitHub Pages does not apply `_headers`; the `lightning.community` route should
+therefore terminate on a header-capable edge/proxy.
+
+If the route is proxied through Cloudflare, avoid TLS/proxy settings that make
+the origin redirect back to the same HTTPS URL. A same-location `301` on
+`/go-wasmsqlite/` happens before the app loads, so it cannot be fixed by the
+demo code.
 
 ## Limitations
 
